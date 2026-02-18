@@ -1,0 +1,14 @@
+{
+  "num_samples": 80,
+  "scenario_histogram": {
+    "random": 32,
+    "narrow": 19,
+    "parking": 29
+  },
+  "resolution": 0.5,
+  "map_size": [
+    64,
+    64
+  ],
+  "fill_value": 1000000.0
+}
