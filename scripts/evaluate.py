@@ -32,6 +32,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=DEFAULT_CONFIG.seed)
     p.add_argument(
+        "--max-expansions",
+        type=int,
+        default=-1,
+        help="Override planner max expansions; <=0 keeps config default.",
+    )
+    p.add_argument(
+        "--residual-alpha",
+        type=float,
+        default=1.0,
+        help="Residual gain alpha for residual predictor: h = h_rs + alpha * delta_h.",
+    )
+    p.add_argument(
+        "--categories",
+        type=str,
+        default="A,B,C",
+        help="Comma separated categories to evaluate, e.g. A,B,C or C.",
+    )
+    p.add_argument(
         "--skip-figures",
         action="store_true",
         help="Skip qualitative figure generation for faster, non-blocking benchmark runs.",
@@ -41,13 +59,24 @@ def parse_args() -> argparse.Namespace:
 
 def _print_method_table(summary: dict) -> None:
     m = summary["methods"]
-    print("| method | success rate | avg expansions | avg runtime(ms) | avg path cost |")
-    print("|---|---:|---:|---:|---:|")
+    has_breakdown = "avg_time_total_ms" in m["ours"]
+    if has_breakdown:
+        print("| method | success rate | avg expansions | avg runtime(ms) | avg search(ms) | avg heuristic(ms) | avg rs(ms) | avg total(ms) | avg path cost |")
+        print("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    else:
+        print("| method | success rate | avg expansions | avg runtime(ms) | avg path cost |")
+        print("|---|---:|---:|---:|---:|")
     for key in ["euclidean", "dubins", "rs_consistent", "ours"]:
         v = m[key]
-        print(
-            f"| {key} | {v['success_rate']:.3f} | {v['avg_expansions']:.1f} | {v['avg_time_ms']:.2f} | {v['avg_cost']:.2f} |"
-        )
+        if has_breakdown:
+            print(
+                f"| {key} | {v['success_rate']:.3f} | {v['avg_expansions']:.1f} | {v['avg_time_ms']:.2f} "
+                f"| {v['avg_time_search_ms']:.2f} | {v['avg_time_heuristic_ms']:.2f} | {v['avg_time_rs_ms']:.2f} | {v['avg_time_total_ms']:.2f} | {v['avg_cost']:.2f} |"
+            )
+        else:
+            print(
+                f"| {key} | {v['success_rate']:.3f} | {v['avg_expansions']:.1f} | {v['avg_time_ms']:.2f} | {v['avg_cost']:.2f} |"
+            )
 
 
 def main() -> None:
@@ -57,11 +86,14 @@ def main() -> None:
     cfg.dataset.teacher_yaw_bins = int(args.teacher_yaw_bins)
     cfg.dataset.teacher_rs_backend = str(args.teacher_rs_backend)
     cfg.dataset.teacher_rs_step_size = float(args.teacher_rs_step_size)
+    if int(args.max_expansions) > 0:
+        cfg.planner.max_expansions = int(args.max_expansions)
     set_seed(args.seed)
     ensure_dirs([cfg.paths.output_dir, cfg.paths.figures_dir, cfg.paths.logs_dir])
 
     predictor = NeuralHeuristicPredictor(args.checkpoint, device=args.device, gaussian_sigma=cfg.dataset.gaussian_sigma)
     clip_override = None if args.neural_clip <= 0.0 else float(args.neural_clip)
+    categories = {c.strip() for c in str(args.categories).split(",") if c.strip()}
     summary, rows, best = evaluate_benchmark(
         cfg,
         args.data / "test",
@@ -69,10 +101,15 @@ def main() -> None:
         cfg.paths.logs_dir,
         tag="benchmark",
         neural_clip_override=clip_override,
+        residual_alpha=float(args.residual_alpha),
+        categories=categories if categories else None,
     )
 
     print("\n[Overall Benchmark]")
     _print_method_table(summary)
+    ec = summary.get("eval_config", {})
+    if ec:
+        print(f"\nEval config: residual_alpha={ec.get('residual_alpha', 1.0)} categories={ec.get('categories', [])}")
     imp = summary["improvement_ours_vs_euclidean"]
     print(
         f"\nOurs vs Euclidean: expansion reduction={100.0 * imp['expansion_reduction_ratio']:.2f}% "

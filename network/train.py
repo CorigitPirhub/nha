@@ -19,6 +19,7 @@ def _masked_loss(
     target: torch.Tensor,
     mask: torch.Tensor,
     loss_weight: torch.Tensor,
+    sample_weight: torch.Tensor | None,
     underestimation_weight: float,
 ) -> torch.Tensor:
     err = pred - target
@@ -26,6 +27,8 @@ def _masked_loss(
     under = (err < 0.0).to(pred.dtype)
     asym = sq * (1.0 + (float(underestimation_weight) - 1.0) * under)
     w = mask * loss_weight
+    if sample_weight is not None:
+        w = w * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
     denom = w.sum().clamp_min(1.0)
     return (asym * w).sum() / denom
 
@@ -40,8 +43,11 @@ def _eval(model: torch.nn.Module, loader: DataLoader, device: torch.device, unde
             y = batch["target"].to(device, non_blocking=True)
             m = batch["mask"].to(device, non_blocking=True)
             lw = batch["loss_weight"].to(device, non_blocking=True)
+            sw = batch.get("sample_weight")
+            if sw is not None:
+                sw = sw.to(device, non_blocking=True)
             pred = model(x)
-            loss = _masked_loss(pred, y, m, lw, underestimation_weight=underestimation_weight)
+            loss = _masked_loss(pred, y, m, lw, sw, underestimation_weight=underestimation_weight)
             total += float(loss.item())
             count += 1
     return total / max(count, 1)
@@ -88,6 +94,7 @@ def train_network(
         hybrid_obstacle_alpha=cfg.dataset.hybrid_obstacle_alpha,
         hybrid_obstacle_threshold_m=cfg.dataset.hybrid_obstacle_threshold_m,
         prediction_mode=cfg.train.prediction_mode,
+        type_c_loss_weight=cfg.train.type_c_loss_weight,
     )
     val_ds = HeuristicFieldDataset(
         val_dir,
@@ -97,6 +104,7 @@ def train_network(
         hybrid_obstacle_alpha=cfg.dataset.hybrid_obstacle_alpha,
         hybrid_obstacle_threshold_m=cfg.dataset.hybrid_obstacle_threshold_m,
         prediction_mode=cfg.train.prediction_mode,
+        type_c_loss_weight=cfg.train.type_c_loss_weight,
     )
 
     out_channels = int(train_ds[0]["target"].shape[0])
@@ -153,6 +161,9 @@ def train_network(
             y = batch["target"].to(device, non_blocking=True)
             m = batch["mask"].to(device, non_blocking=True)
             lw = batch["loss_weight"].to(device, non_blocking=True)
+            sw = batch.get("sample_weight")
+            if sw is not None:
+                sw = sw.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
@@ -162,6 +173,7 @@ def train_network(
                     y,
                     m,
                     lw,
+                    sw,
                     underestimation_weight=cfg.train.underestimation_weight,
                 )
 
@@ -217,6 +229,7 @@ def train_network(
         "in_channels": in_channels,
         "out_channels": out_channels,
         "prediction_mode": cfg.train.prediction_mode,
+        "type_c_loss_weight": float(cfg.train.type_c_loss_weight),
     }
 
     log_path = cfg.paths.logs_dir / "train_metrics.json"

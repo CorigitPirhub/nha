@@ -68,6 +68,7 @@ class TrainConfig:
     underestimation_weight: float = 2.0
     distance_weight_scale_m: float = 6.0
     distance_weight_min: float = 0.25
+    type_c_loss_weight: float = 1.0
     prediction_mode: str = "absolute"  # "absolute" | "residual"
 
 

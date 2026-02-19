@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
         help="Minimum distance loss weight.",
     )
     p.add_argument(
+        "--type-c-weight",
+        type=float,
+        default=DEFAULT_CONFIG.train.type_c_loss_weight,
+        help="Extra sample-level loss weight for category C cases.",
+    )
+    p.add_argument(
         "--eta-min-ratio",
         type=float,
         default=DEFAULT_CONFIG.train.cosine_eta_min_ratio,
@@ -86,6 +92,7 @@ def main() -> None:
     cfg.train.underestimation_weight = args.under_weight
     cfg.train.distance_weight_scale_m = args.dist_weight_scale
     cfg.train.distance_weight_min = args.dist_weight_min
+    cfg.train.type_c_loss_weight = args.type_c_weight
     cfg.train.cosine_eta_min_ratio = args.eta_min_ratio
     cfg.dataset.hybrid_obstacle_alpha = args.hybrid_alpha
     cfg.dataset.hybrid_obstacle_threshold_m = args.hybrid_threshold

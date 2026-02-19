@@ -25,6 +25,7 @@ class HeuristicFieldDataset(Dataset):
         hybrid_obstacle_alpha: float = 0.0,
         hybrid_obstacle_threshold_m: float = 1.5,
         prediction_mode: str = "absolute",
+        type_c_loss_weight: float = 1.0,
     ) -> None:
         self.root = Path(root)
         self.files = sorted(self.root.glob("*.npz"))
@@ -36,6 +37,7 @@ class HeuristicFieldDataset(Dataset):
         self.distance_weight_min = float(np.clip(distance_weight_min, 1e-3, 1.0))
         self.hybrid_obstacle_alpha = float(max(hybrid_obstacle_alpha, 0.0))
         self.hybrid_obstacle_threshold_m = float(max(hybrid_obstacle_threshold_m, 1e-3))
+        self.type_c_loss_weight = float(max(type_c_loss_weight, 1.0))
         self.prediction_mode = str(prediction_mode).lower()
         if self.prediction_mode not in {"absolute", "residual"}:
             raise ValueError(f"Unsupported prediction_mode: {prediction_mode}")
@@ -107,6 +109,7 @@ class HeuristicFieldDataset(Dataset):
             goal = sample["goal"].astype(np.float32)
             resolution = float(sample["resolution"])
             fill_value = float(sample["fill_value"])
+            category = str(sample["category"]) if "category" in sample else "U"
 
             if "teacher_3d" in sample:
                 teacher = sample["teacher_3d"].astype(np.float32)
@@ -161,6 +164,7 @@ class HeuristicFieldDataset(Dataset):
             "target": torch.from_numpy(target),
             "mask": torch.from_numpy(mask),
             "loss_weight": torch.from_numpy(loss_weight),
+            "sample_weight": torch.tensor(self.type_c_loss_weight if category == "C" else 1.0, dtype=torch.float32),
             "scale": torch.tensor(scale, dtype=torch.float32),
             "resolution": torch.tensor(resolution, dtype=torch.float32),
         }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -111,18 +112,28 @@ def _adaptive_neural_clip_factor(occupancy: np.ndarray) -> float:
     return 1.8
 
 
-def _summarize_rows(rows: list[CaseMetrics]) -> dict:
+def _summarize_rows(rows: list[CaseMetrics], timing_rows: list[dict] | None = None) -> dict:
     out: dict = {"num_cases": len(rows), "methods": {}, "by_category": {}}
     methods = ["euclidean", "dubins", "rs_consistent", "ours"]
 
     for m in methods:
         succ_rows = [r for r in rows if getattr(r, f"{m}_success")]
+        succ_indices = [i for i, r in enumerate(rows) if getattr(r, f"{m}_success")]
         out["methods"][m] = {
             "success_rate": len(succ_rows) / max(len(rows), 1),
             "avg_expansions": _safe_mean([float(getattr(r, f"{m}_expansions")) for r in succ_rows]),
             "avg_time_ms": _safe_mean([float(getattr(r, f"{m}_time_ms")) for r in succ_rows]),
             "avg_cost": _safe_mean([float(getattr(r, f"{m}_cost")) for r in succ_rows if np.isfinite(getattr(r, f"{m}_cost"))]),
         }
+        if timing_rows is not None:
+            search_vals = [float(timing_rows[i][m]["search_ms"]) for i in succ_indices]
+            heur_vals = [float(timing_rows[i][m]["heuristic_ms"]) for i in succ_indices]
+            rs_vals = [float(timing_rows[i][m]["rs_ms"]) for i in succ_indices]
+            total_vals = [float(timing_rows[i][m]["total_ms"]) for i in succ_indices]
+            out["methods"][m]["avg_time_search_ms"] = _safe_mean(search_vals)
+            out["methods"][m]["avg_time_heuristic_ms"] = _safe_mean(heur_vals)
+            out["methods"][m]["avg_time_rs_ms"] = _safe_mean(rs_vals)
+            out["methods"][m]["avg_time_total_ms"] = _safe_mean(total_vals)
 
     for cat in ["A", "B", "C"]:
         cat_rows = [r for r in rows if r.category == cat]
@@ -193,6 +204,8 @@ def evaluate_benchmark(
     out_dir: Path,
     tag: str = "benchmark",
     neural_clip_override: float | None = None,
+    residual_alpha: float = 1.0,
+    categories: set[str] | None = None,
 ) -> tuple[dict, list[CaseMetrics], dict]:
     files = sorted(test_dir.glob("*.npz"))
     if not files:
@@ -200,13 +213,15 @@ def evaluate_benchmark(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     rows: list[CaseMetrics] = []
+    timing_rows: list[dict] = []
+    residual_alpha = float(max(residual_alpha, 0.0))
     eval_yaw_bins = int(cfg.dataset.teacher_yaw_bins)
     if predictor.prediction_mode == "residual":
         eval_yaw_bins = int(predictor.out_channels)
 
     best_type_c = {"gain": -np.inf, "payload": None}
 
-    for case_id, p in enumerate(files):
+    for p in files:
         with np.load(p, allow_pickle=False) as data:
             occupancy = data["occupancy"].astype(bool)
             esdf = data["esdf"].astype(np.float32)
@@ -215,6 +230,9 @@ def evaluate_benchmark(
             goal = tuple(float(v) for v in data["goal"].astype(np.float32))
             scenario = str(data["scenario"]) if "scenario" in data else "unknown"
             category = str(data["category"]) if "category" in data else "U"
+        if categories is not None and category not in categories:
+            continue
+        case_id = len(rows)
 
         planner = HybridAStarPlanner(
             occupancy=occupancy,
@@ -230,8 +248,13 @@ def evaluate_benchmark(
         # Baseline 1: Euclidean anchor
         eu_anchor = euclidean_heuristic((goal[0], goal[1]))
         eu_result = _run_method(planner, start, goal, anchor_fn=eu_anchor, guidance_fn=None, main_mode="anchor", record_expanded=(category == "C"))
+        eu_search_ms = float(eu_result.runtime_ms)
+        eu_heur_ms = 0.0
+        eu_rs_ms = 0.0
+        eu_total_ms = eu_search_ms
 
         # Baseline 2: clipped Dubins anchor (nonholonomic analytic prior with Euclidean safety cap)
+        t_h = time.perf_counter()
         dubins_field = compute_dubins_field(
             occupancy=occupancy,
             goal=goal,
@@ -240,6 +263,7 @@ def evaluate_benchmark(
             rho=cfg.vehicle.min_turn_radius,
             fill_value=cfg.dataset.max_teacher_value,
         )
+        db_heur_ms = (time.perf_counter() - t_h) * 1000.0
         dubins_raw = YawFieldHeuristic(
             dubins_field,
             cfg.map.resolution,
@@ -248,8 +272,12 @@ def evaluate_benchmark(
         )
         dubins_anchor = _make_clipped_anchor(dubins_raw, eu_anchor, clip_factor=clip_factor_dubins)
         db_result = _run_method(planner, start, goal, anchor_fn=dubins_anchor, guidance_fn=None, main_mode="anchor")
+        db_search_ms = float(db_result.runtime_ms)
+        db_rs_ms = 0.0
+        db_total_ms = db_search_ms + db_heur_ms
 
         # Baseline 3: planner-consistent Reeds-Shepp analytic anchor.
+        t_rs = time.perf_counter()
         rs_cons_field = compute_reeds_shepp_field(
             occupancy=occupancy,
             goal=goal,
@@ -262,6 +290,7 @@ def evaluate_benchmark(
             cost_mode="planner_consistent",
             cost_cfg=rs_cost_cfg,
         )
+        rs_compute_ms = (time.perf_counter() - t_rs) * 1000.0
         rs_cons_anchor = YawFieldHeuristic(
             rs_cons_field,
             cfg.map.resolution,
@@ -269,12 +298,17 @@ def evaluate_benchmark(
             scale=1.0,
         )
         rs_result = _run_method(planner, start, goal, anchor_fn=rs_cons_anchor, guidance_fn=None, main_mode="anchor")
+        rs_search_ms = float(rs_result.runtime_ms)
+        rs_heur_ms = 0.0
+        rs_total_ms = rs_search_ms + rs_compute_ms
 
         # Ours: residual-corrected anchor or absolute neural anchor.
         if predictor.prediction_mode == "residual":
+            t_pred = time.perf_counter()
             pred_residual = predictor.predict_residual_field(occupancy, esdf, start, goal, resolution=cfg.map.resolution)
+            ours_heur_ms = (time.perf_counter() - t_pred) * 1000.0
             # Residual branch should only add environment-aware penalty, never weaken RS analytical prior.
-            pred_residual = np.maximum(pred_residual, 0.0).astype(np.float32)
+            pred_residual = (np.maximum(pred_residual, 0.0) * residual_alpha).astype(np.float32)
             neural_raw = ResidualYawFieldHeuristic(
                 base_field_3d=rs_cons_field,
                 residual_field_3d=pred_residual,
@@ -285,8 +319,12 @@ def evaluate_benchmark(
             pred_field = (rs_cons_field + pred_residual).astype(np.float32)
             pred_field[:, occupancy] = cfg.dataset.max_teacher_value
             neural_anchor = neural_raw
+            ours_rs_ms = rs_compute_ms
         else:
+            t_pred = time.perf_counter()
             pred_field = predictor.predict_field(occupancy, esdf, start, goal, resolution=cfg.map.resolution)
+            ours_heur_ms = (time.perf_counter() - t_pred) * 1000.0
+            ours_rs_ms = 0.0
             neural_raw = _build_guidance_fn(pred_field, cfg, occupancy)
             neural_anchor = _make_clipped_anchor(
                 neural_raw,
@@ -304,6 +342,8 @@ def evaluate_benchmark(
             main_mode="anchor",
             record_expanded=(category == "C"),
         )
+        ours_search_ms = float(ours_result.runtime_ms)
+        ours_total_ms = ours_search_ms + ours_heur_ms + ours_rs_ms
 
         eu = _to_method_metrics(eu_result)
         db = _to_method_metrics(db_result)
@@ -333,6 +373,34 @@ def evaluate_benchmark(
                 ours_cost=ou.cost,
             )
         )
+        timing_rows.append(
+            {
+                "euclidean": {
+                    "search_ms": eu_search_ms,
+                    "heuristic_ms": eu_heur_ms,
+                    "rs_ms": eu_rs_ms,
+                    "total_ms": eu_total_ms,
+                },
+                "dubins": {
+                    "search_ms": db_search_ms,
+                    "heuristic_ms": db_heur_ms,
+                    "rs_ms": db_rs_ms,
+                    "total_ms": db_total_ms,
+                },
+                "rs_consistent": {
+                    "search_ms": rs_search_ms,
+                    "heuristic_ms": rs_heur_ms,
+                    "rs_ms": rs_compute_ms,
+                    "total_ms": rs_total_ms,
+                },
+                "ours": {
+                    "search_ms": ours_search_ms,
+                    "heuristic_ms": ours_heur_ms,
+                    "rs_ms": ours_rs_ms,
+                    "total_ms": ours_total_ms,
+                },
+            }
+        )
 
         if category == "C" and eu.success and ou.success:
             gain = eu.expansions - ou.expansions
@@ -357,7 +425,14 @@ def evaluate_benchmark(
                     },
                 }
 
-    summary = _summarize_rows(rows)
+    if not rows:
+        raise RuntimeError("No cases selected for evaluation after filtering.")
+
+    summary = _summarize_rows(rows, timing_rows=timing_rows)
+    summary["eval_config"] = {
+        "residual_alpha": residual_alpha,
+        "categories": sorted(list(categories)) if categories is not None else ["A", "B", "C", "U"],
+    }
 
     csv_path = out_dir / f"{tag}_cases.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
