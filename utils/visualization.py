@@ -5,6 +5,7 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
+from utils.common import yaw_to_bin_float
 
 
 def save_field_overview(
@@ -99,4 +100,92 @@ def save_training_curve(train_loss: list[float], val_loss: list[float], out_path
     ax.legend()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def save_search_tree_comparison(
+    occupancy: np.ndarray,
+    euclidean_expanded: np.ndarray,
+    ours_expanded: np.ndarray,
+    euclidean_path: np.ndarray,
+    ours_path: np.ndarray,
+    resolution: float,
+    start: tuple[float, float, float],
+    goal: tuple[float, float, float],
+    out_path: Path,
+    title: str = "search_tree_compare",
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+    panels = [
+        (axes[0], euclidean_expanded, euclidean_path, "Euclidean"),
+        (axes[1], ours_expanded, ours_path, "Ours (Neural Guided)"),
+    ]
+    for ax, expanded, path, name in panels:
+        ax.imshow(occupancy, cmap="gray_r", origin="lower")
+        if expanded.size > 0:
+            ex = expanded[:, 0] / resolution - 0.5
+            ey = expanded[:, 1] / resolution - 0.5
+            ax.scatter(ex, ey, s=1.0, c="deepskyblue", alpha=0.35, linewidths=0)
+        if path.size > 0:
+            px = path[:, 0] / resolution - 0.5
+            py = path[:, 1] / resolution - 0.5
+            ax.plot(px, py, color="orange", linewidth=2.0)
+        sx = start[0] / resolution - 0.5
+        sy = start[1] / resolution - 0.5
+        gx = goal[0] / resolution - 0.5
+        gy = goal[1] / resolution - 0.5
+        ax.scatter([sx], [sy], c="lime", s=70, edgecolors="black")
+        ax.scatter([gx], [gy], c="red", s=70, edgecolors="black")
+        ax.set_title(name)
+        ax.set_axis_off()
+    fig.suptitle(title)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=170)
+    plt.close(fig)
+
+
+def save_nonholonomic_field_comparison(
+    occupancy: np.ndarray,
+    teacher_3d: np.ndarray,
+    pred_3d: np.ndarray,
+    goal: tuple[float, float, float],
+    yaw_ref: float,
+    resolution: float,
+    out_path: Path,
+    title: str = "nonholonomic_field_compare",
+) -> None:
+    if teacher_3d is None or pred_3d is None:
+        return
+    if teacher_3d.ndim != 3 or pred_3d.ndim != 3:
+        return
+
+    k_t = int(np.floor(yaw_to_bin_float(yaw_ref, teacher_3d.shape[0]))) % teacher_3d.shape[0]
+    k_p = int(np.floor(yaw_to_bin_float(yaw_ref, pred_3d.shape[0]))) % pred_3d.shape[0]
+
+    teacher_slice = teacher_3d[k_t]
+    pred_slice = pred_3d[k_p]
+
+    h, w = occupancy.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    wx = (xx + 0.5) * resolution
+    wy = (yy + 0.5) * resolution
+    euc = np.hypot(wx - goal[0], wy - goal[1]).astype(np.float32)
+
+    vmax = np.percentile(teacher_slice[~occupancy], 96) if np.any(~occupancy) else np.max(teacher_slice)
+    vmax = max(1.0, float(vmax))
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    for ax, mat, name in [
+        (axes[0], teacher_slice, "Teacher (yaw-slice)"),
+        (axes[1], pred_slice, "Prediction (yaw-slice)"),
+        (axes[2], euc, "Euclidean"),
+    ]:
+        im = ax.imshow(mat, cmap="viridis", origin="lower", vmin=0.0, vmax=vmax)
+        ax.contour(occupancy.astype(float), levels=[0.5], colors="white", linewidths=0.6)
+        ax.set_title(name)
+        ax.set_axis_off()
+        fig.colorbar(im, ax=ax, fraction=0.046)
+    fig.suptitle(title)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=170)
     plt.close(fig)

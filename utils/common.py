@@ -59,6 +59,33 @@ def bilinear_interpolate(field: np.ndarray, x: float, y: float, resolution: floa
     return float(v0 * (1.0 - wy) + v1 * wy)
 
 
+def yaw_to_bin_float(yaw: float, num_bins: int) -> float:
+    step = 2.0 * np.pi / max(num_bins, 1)
+    return (wrap_to_pi(yaw) + np.pi) / step - 0.5
+
+
+def trilinear_interpolate_yaw(
+    field: np.ndarray,
+    x: float,
+    y: float,
+    yaw: float,
+    resolution: float,
+) -> float:
+    """
+    Interpolate a [yaw_bin, y, x] tensor in (x, y, yaw).
+    Yaw interpolation is circular (wrap-around).
+    """
+    num_bins = field.shape[0]
+    kf = yaw_to_bin_float(yaw, num_bins)
+    k0 = int(np.floor(kf)) % num_bins
+    k1 = (k0 + 1) % num_bins
+    wk = kf - np.floor(kf)
+
+    v0 = bilinear_interpolate(field[k0], x, y, resolution)
+    v1 = bilinear_interpolate(field[k1], x, y, resolution)
+    return float(v0 * (1.0 - wk) + v1 * wk)
+
+
 def gaussian_2d(height: int, width: int, cx: float, cy: float, sigma: float) -> np.ndarray:
     yy, xx = np.mgrid[0:height, 0:width]
     return np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sigma**2)).astype(np.float32)

@@ -33,7 +33,7 @@ class PlannerConfig:
     reverse_penalty: float = 1.2
     steer_penalty: float = 0.05
     steer_change_penalty: float = 0.05
-    guidance_blend: float = 0.35
+    guidance_blend: float = 0.70
     warm_start_budget: int = 0
 
 
@@ -45,16 +45,30 @@ class DatasetConfig:
     gaussian_sigma: float = 2.5
     min_start_goal_dist_m: float = 8.0
     max_teacher_value: float = 1e6
+    teacher_yaw_bins: int = 24
+    teacher_mode: str = "dubins_proxy"
+    teacher_rs_backend: str = "auto"
+    teacher_rs_step_size: float = 1.0
+    hybrid_obstacle_alpha: float = 0.0
+    hybrid_obstacle_threshold_m: float = 1.5
+    benchmark_train_counts: Tuple[int, int, int] = (40, 40, 40)  # A, B, C
+    benchmark_val_counts: Tuple[int, int, int] = (8, 8, 8)
+    benchmark_test_counts: Tuple[int, int, int] = (12, 12, 12)
 
 
 @dataclass
 class TrainConfig:
     batch_size: int = 8
-    epochs: int = 8
+    epochs: int = 20
     learning_rate: float = 1e-3
     weight_decay: float = 1e-5
     num_workers: int = 0
-    device: str = "cpu"
+    device: str = "cuda"
+    cosine_eta_min_ratio: float = 0.1
+    underestimation_weight: float = 2.0
+    distance_weight_scale_m: float = 6.0
+    distance_weight_min: float = 0.25
+    prediction_mode: str = "absolute"  # "absolute" | "residual"
 
 
 @dataclass

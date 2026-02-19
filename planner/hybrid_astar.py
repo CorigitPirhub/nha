@@ -34,6 +34,7 @@ class PlanResult:
     expansions: int
     runtime_ms: float
     message: str
+    expanded_xy: np.ndarray
 
 
 class HybridAStarPlanner:
@@ -68,6 +69,8 @@ class HybridAStarPlanner:
         goal: Tuple[float, float, float],
         guidance_fn: Optional[HeuristicFn] = None,
         anchor_fn: Optional[HeuristicFn] = None,
+        main_mode: str = "anchor",
+        record_expanded: bool = False,
     ) -> PlanResult:
         t0 = time.perf_counter()
         if anchor_fn is None:
@@ -75,7 +78,15 @@ class HybridAStarPlanner:
         h_pair = compose_guidance(anchor_fn, guidance_fn, self.cfg.guidance_blend)
 
         if not self._state_is_valid(start[0], start[1]) or not self._state_is_valid(goal[0], goal[1]):
-            return PlanResult(False, np.zeros((0, 3), dtype=np.float32), np.inf, 0, 0.0, "Start or goal in collision")
+            return PlanResult(
+                False,
+                np.zeros((0, 3), dtype=np.float32),
+                np.inf,
+                0,
+                0.0,
+                "Start or goal in collision",
+                np.zeros((0, 2), dtype=np.float32),
+            )
 
         upper_bound = np.inf
         pre_expansions = 0
@@ -91,6 +102,7 @@ class HybridAStarPlanner:
                 max_expansions=warm_budget,
                 upper_bound=np.inf,
                 stop_on_first_goal=True,
+                record_expanded=record_expanded,
             )
             pre_expansions = warm.expansions
             if warm.success:
@@ -101,10 +113,11 @@ class HybridAStarPlanner:
             start=start,
             goal=goal,
             h_pair=h_pair,
-            mode="anchor",
+            mode=main_mode,
             max_expansions=self.cfg.max_expansions,
             upper_bound=upper_bound,
             stop_on_first_goal=False,
+            record_expanded=record_expanded,
         )
         total_ms = (time.perf_counter() - t0) * 1000.0
         main.runtime_ms = total_ms
@@ -132,6 +145,7 @@ class HybridAStarPlanner:
         max_expansions: int,
         upper_bound: float,
         stop_on_first_goal: bool,
+        record_expanded: bool,
     ) -> PlanResult:
         start_key = self._state_key(*start)
         a0, g0 = h_pair(*start)
@@ -161,6 +175,7 @@ class HybridAStarPlanner:
         best_goal_key: Optional[Tuple[int, int, int]] = None
         best_goal_cost = float(upper_bound)
         expansions = 0
+        expanded_xy: List[Tuple[float, float]] = []
 
         while open_heap and expansions < max_expansions:
             primary, _, _, key = heapq.heappop(open_heap)
@@ -180,6 +195,8 @@ class HybridAStarPlanner:
                 continue
             expanded_best_g[key] = rec.g
             expansions += 1
+            if record_expanded:
+                expanded_xy.append((rec.x, rec.y))
 
             if self._is_goal(rec.x, rec.y, rec.yaw, goal):
                 if rec.g < best_goal_cost:
@@ -187,13 +204,29 @@ class HybridAStarPlanner:
                     best_goal_key = key
                 if stop_on_first_goal:
                     path = self._reconstruct_path(key, records)
-                    return PlanResult(True, path, float(rec.g), expansions, 0.0, "goal found")
+                    return PlanResult(
+                        True,
+                        path,
+                        float(rec.g),
+                        expansions,
+                        0.0,
+                        "goal found",
+                        np.asarray(expanded_xy, dtype=np.float32),
+                    )
 
-            if mode == "anchor" and best_goal_key is not None:
+            if best_goal_key is not None:
                 min_anchor = self._peek_min_anchor(anchor_heap, records)
                 if min_anchor >= best_goal_cost - 1e-6:
                     path = self._reconstruct_path(best_goal_key, records)
-                    return PlanResult(True, path, float(best_goal_cost), expansions, 0.0, "optimal")
+                    return PlanResult(
+                        True,
+                        path,
+                        float(best_goal_cost),
+                        expansions,
+                        0.0,
+                        "optimal",
+                        np.asarray(expanded_xy, dtype=np.float32),
+                    )
 
             for steer, direction in self.motion_primitives:
                 nxt = self._simulate(rec.x, rec.y, rec.yaw, steer, direction)
@@ -234,9 +267,25 @@ class HybridAStarPlanner:
 
         if best_goal_key is not None:
             path = self._reconstruct_path(best_goal_key, records)
-            return PlanResult(True, path, float(best_goal_cost), expansions, 0.0, "bounded by expansion limit")
+            return PlanResult(
+                True,
+                path,
+                float(best_goal_cost),
+                expansions,
+                0.0,
+                "bounded by expansion limit",
+                np.asarray(expanded_xy, dtype=np.float32),
+            )
 
-        return PlanResult(False, np.zeros((0, 3), dtype=np.float32), np.inf, expansions, 0.0, "search failed")
+        return PlanResult(
+            False,
+            np.zeros((0, 3), dtype=np.float32),
+            np.inf,
+            expansions,
+            0.0,
+            "search failed",
+            np.asarray(expanded_xy, dtype=np.float32),
+        )
 
     def _priority(self, rec: NodeRecord, mode: str) -> Tuple[float, float]:
         f_anchor = rec.g + rec.anchor

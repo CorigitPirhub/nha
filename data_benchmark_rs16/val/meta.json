@@ -1,0 +1,26 @@
+{
+  "num_samples": 18,
+  "counts_by_category": {
+    "A": 6,
+    "B": 6,
+    "C": 6
+  },
+  "scenario_histogram": {
+    "random": 6,
+    "narrow": 6,
+    "parking": 0,
+    "deadend": 6
+  },
+  "resolution": 0.5,
+  "map_size": [
+    64,
+    64
+  ],
+  "fill_value": 1000000.0,
+  "teacher_yaw_bins": 16,
+  "teacher_mode": "reeds_shepp",
+  "teacher_rs_backend": "rsplan",
+  "teacher_rs_step_size": 1.0,
+  "hybrid_obstacle_alpha": 0.0,
+  "hybrid_obstacle_threshold_m": 1.5
+}

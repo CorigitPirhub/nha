@@ -94,6 +94,44 @@ def _generate_parking_map(cfg: MapConfig, rng: np.random.Generator) -> np.ndarra
     return occ
 
 
+def _generate_deadend_map(cfg: MapConfig, rng: np.random.Generator) -> tuple[np.ndarray, Tuple[float, float, float], Tuple[float, float, float]]:
+    """Cul-de-sac style map forcing a turn-around maneuver."""
+    occ = np.ones((cfg.height, cfg.width), dtype=bool)
+    _add_boundaries(occ)
+
+    mid = cfg.height // 2 + int(rng.integers(-2, 3))
+    half_w = int(rng.integers(3, 5))
+    y0 = max(2, mid - half_w)
+    y1 = min(cfg.height - 2, mid + half_w)
+
+    # Main corridor
+    x_entry = 2
+    x_end = cfg.width - 8
+    occ[y0:y1, x_entry:x_end] = False
+
+    # Dead-end bulb where heading change is required.
+    bulb_h = int(rng.integers(8, 12))
+    by0 = max(2, mid - bulb_h // 2)
+    by1 = min(cfg.height - 2, by0 + bulb_h)
+    bx0 = cfg.width - 16
+    bx1 = cfg.width - 4
+    occ[by0:by1, bx0:bx1] = False
+
+    # Add sparse clutter around the corridor.
+    clutter = np.zeros_like(occ)
+    density = float(rng.uniform(0.01, 0.04))
+    _random_rectangles(clutter, rng, density)
+    occ = np.logical_or(occ, np.logical_and(clutter, np.ones_like(occ, dtype=bool)))
+    occ[y0:y1, x_entry:x_end] = False
+    occ[by0:by1, bx0:bx1] = False
+    _add_boundaries(occ)
+
+    start = ((x_entry + 2.0) * cfg.resolution, (mid + 0.5) * cfg.resolution, 0.0)
+    goal_y = float((by0 + by1) * 0.5) * cfg.resolution
+    goal = ((bx1 - 3.0) * cfg.resolution, goal_y, np.pi)
+    return occ, start, goal
+
+
 def sample_start_goal(
     occ: np.ndarray,
     resolution: float,
@@ -125,26 +163,55 @@ def sample_start_goal(
     raise RuntimeError("Unable to sample valid start/goal with distance constraint")
 
 
+def scenario_to_category(scenario: str) -> str:
+    if scenario == "random":
+        return "A"
+    if scenario == "narrow":
+        return "B"
+    return "C"
+
+
 def generate_scene(
     cfg: MapConfig,
     min_start_goal_dist_m: float,
     rng: np.random.Generator,
     scenario: str | None = None,
 ) -> Scene:
-    scenario_types = ("random", "narrow", "parking")
+    scenario_types = ("random", "narrow", "parking", "deadend")
     chosen = scenario if scenario in scenario_types else scenario_types[int(rng.integers(0, len(scenario_types)))]
 
     if chosen == "random":
         occ = _generate_random_map(cfg, rng)
+        start, goal = sample_start_goal(occ, cfg.resolution, min_start_goal_dist_m, rng)
     elif chosen == "narrow":
         occ = _generate_narrow_passage_map(cfg, rng)
+        start, goal = sample_start_goal(occ, cfg.resolution, min_start_goal_dist_m, rng)
     elif chosen == "parking":
         occ = _generate_parking_map(cfg, rng)
+        start, goal = sample_start_goal(occ, cfg.resolution, min_start_goal_dist_m, rng)
+    elif chosen == "deadend":
+        occ, start, goal = _generate_deadend_map(cfg, rng)
     else:
         raise ValueError(f"Unknown scenario: {chosen}")
 
-    start, goal = sample_start_goal(occ, cfg.resolution, min_start_goal_dist_m, rng)
     return Scene(occupancy=occ, start=start, goal=goal, scenario=chosen)
+
+
+def generate_scene_from_category(
+    cfg: MapConfig,
+    min_start_goal_dist_m: float,
+    rng: np.random.Generator,
+    category: str,
+) -> Scene:
+    if category == "A":
+        scenario = "random"
+    elif category == "B":
+        scenario = "narrow"
+    elif category == "C":
+        scenario = "deadend" if rng.random() < 0.5 else "parking"
+    else:
+        raise ValueError(f"Unknown category {category}")
+    return generate_scene(cfg, min_start_goal_dist_m, rng, scenario=scenario)
 
 
 def scenario_histogram(scenes: Dict[str, int]) -> str:

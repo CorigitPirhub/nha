@@ -22,7 +22,13 @@ class ConvBlock(nn.Module):
 
 
 class TinyUNet(nn.Module):
-    def __init__(self, in_channels: int = 4, base: int = 32) -> None:
+    def __init__(
+        self,
+        in_channels: int = 5,
+        out_channels: int = 24,
+        base: int = 48,
+        output_activation: str = "softplus",
+    ) -> None:
         super().__init__()
         self.inc = ConvBlock(in_channels, base)
         self.down1 = nn.Sequential(nn.MaxPool2d(2), ConvBlock(base, base * 2))
@@ -30,7 +36,8 @@ class TinyUNet(nn.Module):
 
         self.up1_conv = ConvBlock(base * 4 + base * 2, base * 2)
         self.up2_conv = ConvBlock(base * 2 + base, base)
-        self.out = nn.Conv2d(base, 1, kernel_size=1)
+        self.out = nn.Conv2d(base, out_channels, kernel_size=1)
+        self.output_activation = str(output_activation).lower()
         self.softplus = nn.Softplus(beta=1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -47,4 +54,8 @@ class TinyUNet(nn.Module):
         x = self.up2_conv(x)
 
         x = self.out(x)
-        return self.softplus(x)
+        if self.output_activation == "softplus":
+            return self.softplus(x)
+        if self.output_activation == "identity":
+            return x
+        raise ValueError(f"Unsupported output_activation: {self.output_activation}")

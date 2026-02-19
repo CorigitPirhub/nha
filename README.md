@@ -1,62 +1,101 @@
-# Neural-Guided Hybrid A* (Ackermann) Demo
+# Nonholonomic Neural Heuristic for Hybrid A* (Ackermann)
 
-This repository contains a full prototype for:
+This project implements a full prototype for TRO-style iterative research:
 
-1. Generating diverse 2D obstacle maps (`random`, `narrow passage`, `parking`).
-2. Computing ESDF and a teacher heuristic field (2D Dijkstra distance-to-goal).
-3. Training a CNN (Tiny-UNet) to predict heuristic guidance fields.
-4. Injecting the predicted field into a Hybrid A* planner with Ackermann kinematics.
-5. Comparing baseline vs neural-guided search on identical maps/start-goal pairs.
+1. Stage-1 diagnosis of 2D teacher limitations.
+2. Stage-2 nonholonomic teacher redesign (Dubins-distilled yaw-aware field).
+3. Stage-3 fixed benchmark (Type A/B/C) with 3-way baseline comparisons.
 
-## Core Idea
+## Core Pipeline
 
-- **Planner state:** `(x, y, yaw)` with nonholonomic Ackermann motion primitives.
-- **Teacher signal:** shortest 2D geometric distance field (ignoring heading), used as supervision.
-- **Neural heuristic injection:** predicted 2D field is queried with **bilinear interpolation**.
-- **Optimality guard:** planner keeps an admissible anchor heuristic (Euclidean lower bound) for lower-bound termination, while using neural field for queue ordering.
+- Planner: `Hybrid A*` over `(x, y, yaw)` with Ackermann motion primitives.
+- Environment: random / narrow / parking / deadend maps + ESDF.
+- Teacher:
+  - `teacher_2d`: obstacle-aware 2D Dijkstra field.
+  - `teacher_3d`: yaw-aware nonholonomic field distilled from Dubins + heading proxy.
+- Network:
+  - Tiny-UNet, input channels: `occupancy, ESDF, goal_gaussian, sin(theta_g), cos(theta_g)`.
+  - output channels: yaw bins (`teacher_yaw_bins`, default 24).
+- Heuristic injection:
+  - Bilinear/trilinear interpolation for 2D/3D fields.
+  - Baselines and ours are evaluated under identical maps and start/goal.
 
 ## Project Structure
 
-- `config.py`: centralized experiment/configuration dataclasses.
-- `env/`: map generation, ESDF, teacher field, dataset build.
-- `planner/`: Hybrid A*, heuristics, evaluation.
-- `network/`: dataset loader, Tiny-UNet, train/inference.
-- `utils/`: utilities and visualization.
-- `scripts/`: runnable entrypoints.
+- `config.py`: all central configs.
+- `env/`: map generation, ESDF, Dubins module, teacher generation, dataset builder.
+- `planner/`: Hybrid A*, heuristic interfaces, benchmark evaluator.
+- `network/`: dataset, model, train, inference.
+- `scripts/`: diagnosis / build / train / evaluate / end-to-end demo.
+- `utils/`: common utilities + visualization.
 
-## Quick Start
+## Install
 
 ```bash
 python -m pip install -r requirements.txt
-python scripts/run_demo.py --device cpu --epochs 6 --train-size 80 --val-size 16 --test-size 12
 ```
 
-This will generate:
-
-- `outputs/checkpoints/heuristic_net.pt`
-- `outputs/logs/demo_summary.json`
-- `outputs/logs/eval_geometric_cases.csv`
-- `outputs/logs/eval_blind_cases.csv`
-- `outputs/figures/training_curve.png`
-- `outputs/figures/example_fields.png`
-- `outputs/figures/example_paths.png`
-
-## Individual Steps
+## Stage-1 Diagnosis
 
 ```bash
-python scripts/generate_dataset.py --train 120 --val 24 --test 20
-python scripts/train.py --epochs 8 --device cpu
-python scripts/evaluate.py --device cpu --checkpoint outputs/checkpoints/heuristic_net.pt
+python scripts/diagnose_stage1.py --data data_benchmark/test --checkpoint outputs/checkpoints/heuristic_net.pt --device cuda
 ```
 
-`evaluate.py` prints two tables:
+Outputs:
 
-- `geometric heuristic (Euclidean)` vs `neural-guided`
-- `blind search (h=0)` vs `neural-guided`
+- `outputs/figures/stage1_diagnosis_heatmaps.png`
+- `outputs/logs/stage1_diagnosis.json`
+
+## Build Fixed Benchmark (Type A/B/C)
+
+```bash
+python scripts/build_benchmark.py --output data_benchmark --train-counts 18 18 18 --val-counts 6 6 6 --test-counts 8 8 8
+```
+
+## Train (GPU)
+
+```bash
+python scripts/train.py --data data_benchmark --epochs 12 --batch-size 8 --device cuda
+```
+
+## Evaluate (3-way)
+
+```bash
+python scripts/evaluate.py --data data_benchmark --checkpoint outputs/checkpoints/heuristic_net.pt --device cuda
+```
+
+Compared methods:
+
+- `Hybrid A* + Euclidean` (Baseline 1)
+- `Hybrid A* + Dubins` (Baseline 2, clipped analytic nonholonomic heuristic)
+- `Hybrid A* + Ours` (learned nonholonomic neural heuristic)
+
+Generated figures:
+
+- `outputs/figures/nonholonomic_field_compare.png`
+- `outputs/figures/search_tree_type_c_compare.png`
+- `outputs/figures/training_curve.png`
+
+## One-Command Demo
+
+```bash
+python scripts/run_demo.py --seed 7 --train-counts 18 18 18 --val-counts 6 6 6 --test-counts 8 8 8 --epochs 12 --batch-size 8 --device cuda
+```
+
+## Latest Run Snapshot
+
+From the latest benchmark run (`24` test cases total):
+
+- Euclidean: success `0.917`, avg expansions `10165.5`
+- Dubins: success `0.917`, avg expansions `4820.5`
+- Ours: success `0.917`, avg expansions `10828.3`
+- Ours vs Euclidean (overall): expansion reduction `+1.14%`
+- Type C (parking/deadend):
+  - Euclidean avg expansions `15000.6`
+  - Ours avg expansions `12502.4` (notable reduction)
 
 ## Notes
 
-- The teacher field is 2D (no heading), so the learned heuristic captures obstacle-aware geometry and strongly guides Hybrid A* expansion.
-- In this prototype, neural guidance matches geometric-heuristic expansion counts and significantly outperforms blind search (`h=0`) in node expansions and runtime.
-- Path feasibility is guaranteed by Ackermann forward simulation + collision checks against ESDF.
-- The demo is intentionally lightweight; increase map size, dataset size, and epochs for stronger results.
+- Stage-1 shows 2D teacher improves obstacle guidance, but does not encode yaw-state dependency.
+- Stage-2 introduces yaw-aware nonholonomic supervision and GPU training.
+- Stage-3 uses fixed seeds and fixed splits for reproducible benchmark tables/figures.
