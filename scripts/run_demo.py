@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
+import shutil
 import sys
 
 import torch
@@ -17,7 +19,12 @@ from network.inference import NeuralHeuristicPredictor
 from network.train import train_network
 from planner.evaluate import evaluate_benchmark
 from utils.common import ensure_dirs, set_seed
-from utils.visualization import save_nonholonomic_field_comparison, save_search_tree_comparison, save_training_curve
+from utils.visualization import (
+    save_efficiency_scatter,
+    save_nonholonomic_field_comparison,
+    save_search_tree_comparison,
+    save_training_curve,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,8 +33,29 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train-counts", type=int, nargs=3, default=[24, 24, 24])
     p.add_argument("--val-counts", type=int, nargs=3, default=[6, 6, 6])
     p.add_argument("--test-counts", type=int, nargs=3, default=[8, 8, 8])
-    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--epochs", type=int, default=60)
     p.add_argument("--batch-size", type=int, default=8)
+    p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--under-weight", type=float, default=1.0)
+    p.add_argument("--prediction-mode", type=str, default="residual", choices=["absolute", "residual"])
+    p.add_argument("--type-c-weight", type=float, default=1.0)
+    p.add_argument("--residual-alpha", type=float, default=DEFAULT_CONFIG.planner.residual_alpha)
+    p.add_argument("--use-rs-cache", dest="use_rs_cache", action="store_true", default=True)
+    p.add_argument("--no-rs-cache", dest="use_rs_cache", action="store_false")
+    p.add_argument("--rs-cache-dir", type=Path, default=Path("outputs/rs_cache"))
+    p.add_argument(
+        "--clear-rs-cache",
+        dest="clear_rs_cache",
+        action="store_true",
+        default=True,
+        help="Clear RS cache directory before benchmark cold run.",
+    )
+    p.add_argument(
+        "--keep-rs-cache",
+        dest="clear_rs_cache",
+        action="store_false",
+        help="Keep existing RS cache files; cold/hot separation may be invalid.",
+    )
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--data-dir", type=Path, default=Path("data_benchmark"))
     p.add_argument("--output-dir", type=Path, default=Path("outputs"))
@@ -36,13 +64,65 @@ def parse_args() -> argparse.Namespace:
 
 def _print_method_table(summary: dict) -> None:
     m = summary["methods"]
-    print("| method | success rate | avg expansions | avg runtime(ms) | avg path cost |")
-    print("|---|---:|---:|---:|---:|")
-    for key in ["euclidean", "dubins", "ours"]:
+    print("| method | success rate | avg expansions | avg runtime(ms) | avg total(ms) | avg path cost |")
+    print("|---|---:|---:|---:|---:|---:|")
+    for key in ["euclidean", "dubins", "rs_consistent", "ours"]:
         v = m[key]
+        total = float(v.get("avg_time_total_ms", v["avg_time_ms"]))
         print(
-            f"| {key} | {v['success_rate']:.3f} | {v['avg_expansions']:.1f} | {v['avg_time_ms']:.2f} | {v['avg_cost']:.2f} |"
+            f"| {key} | {v['success_rate']:.3f} | {v['avg_expansions']:.1f} | {v['avg_time_ms']:.2f} | {total:.2f} | {v['avg_cost']:.2f} |"
         )
+
+
+def _method_total_ms(summary: dict, method_key: str) -> float:
+    v = summary["methods"][method_key]
+    return float(v.get("avg_time_total_ms", v["avg_time_ms"]))
+
+
+def _print_submission_table(cold_summary: dict, hot_summary: dict) -> None:
+    labels = {
+        "euclidean": "Euclidean",
+        "dubins": "Dubins",
+        "rs_consistent": "RS-Consistent",
+        "ours": "Ours",
+    }
+    print("\n[Final Submission Table]")
+    print("| Method | Avg Expansions | Avg Total Time (ms) - Cold | Avg Total Time (ms) - Hot |")
+    print("|---|---:|---:|---:|")
+    for key in ["euclidean", "dubins", "rs_consistent", "ours"]:
+        exp = float(hot_summary["methods"][key]["avg_expansions"])
+        cold_t = _method_total_ms(cold_summary, key)
+        hot_t = _method_total_ms(hot_summary, key)
+        print(f"| {labels[key]} | {exp:.1f} | {cold_t:.2f} | {hot_t:.2f} |")
+
+
+def _save_submission_csv(cold_summary: dict, hot_summary: dict, out_path: Path) -> None:
+    labels = {
+        "euclidean": "Euclidean",
+        "dubins": "Dubins",
+        "rs_consistent": "RS-Consistent",
+        "ours": "Ours",
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "Method",
+                "Avg Expansions",
+                "Avg Total Time (ms) - Cold",
+                "Avg Total Time (ms) - Hot",
+            ]
+        )
+        for key in ["euclidean", "dubins", "rs_consistent", "ours"]:
+            writer.writerow(
+                [
+                    labels[key],
+                    f"{float(hot_summary['methods'][key]['avg_expansions']):.6f}",
+                    f"{_method_total_ms(cold_summary, key):.6f}",
+                    f"{_method_total_ms(hot_summary, key):.6f}",
+                ]
+            )
 
 
 def main() -> None:
@@ -51,6 +131,10 @@ def main() -> None:
     cfg.seed = args.seed
     cfg.train.epochs = args.epochs
     cfg.train.batch_size = args.batch_size
+    cfg.train.learning_rate = args.lr
+    cfg.train.underestimation_weight = args.under_weight
+    cfg.train.prediction_mode = args.prediction_mode
+    cfg.train.type_c_loss_weight = args.type_c_weight
     cfg.train.device = args.device
 
     if cfg.train.device.startswith("cuda") and not torch.cuda.is_available():
@@ -71,7 +155,7 @@ def main() -> None:
     ])
     set_seed(cfg.seed)
 
-    print("\n[1/4] Building fixed benchmark dataset (Type A/B/C)...")
+    print("\n[1/5] Building fixed benchmark dataset (Type A/B/C)...")
     train_counts = generate_benchmark_split(
         cfg.paths.data_dir / "train",
         tuple(args.train_counts),
@@ -103,7 +187,7 @@ def main() -> None:
     print(describe_split("val", val_counts))
     print(describe_split("test", test_counts))
 
-    print(f"\n[2/4] Training neural model on device={cfg.train.device} ...")
+    print(f"\n[2/5] Training neural model on device={cfg.train.device} ...")
     ckpt_path, metrics = train_network(cfg, cfg.paths.data_dir / "train", cfg.paths.data_dir / "val")
     print(f"checkpoint: {ckpt_path}")
     print(f"best_val_loss: {metrics['best_val_loss']:.6f}")
@@ -112,29 +196,106 @@ def main() -> None:
         train_hist = json.load(f)
     save_training_curve(train_hist["train_loss"], train_hist["val_loss"], cfg.paths.figures_dir / "training_curve.png")
 
-    print("\n[3/4] Running benchmark: Euclidean vs Dubins vs Ours...")
+    bench_mode = "cold + hot cache" if args.use_rs_cache else "single pass"
+    print(
+        f"\n[3/5] Running benchmark ({bench_mode}): "
+        "Euclidean vs Dubins vs RS-Consistent vs Ours..."
+    )
     predictor = NeuralHeuristicPredictor(ckpt_path, device=cfg.train.device, gaussian_sigma=cfg.dataset.gaussian_sigma)
-    summary, rows, best = evaluate_benchmark(cfg, cfg.paths.data_dir / "test", predictor, cfg.paths.logs_dir, tag="benchmark")
 
-    _print_method_table(summary)
-    imp = summary["improvement_ours_vs_euclidean"]
+    cold_summary: dict
+    hot_summary: dict
+    rows = []
+    best = {"payload": None}
+    if args.use_rs_cache:
+        if args.clear_rs_cache and args.rs_cache_dir.exists():
+            shutil.rmtree(args.rs_cache_dir)
+        args.rs_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        cold_summary, _, cold_best = evaluate_benchmark(
+            cfg,
+            cfg.paths.data_dir / "test",
+            predictor,
+            cfg.paths.logs_dir,
+            tag="benchmark_cache_cold",
+            residual_alpha=float(args.residual_alpha),
+            use_rs_cache=True,
+            rs_cache_dir=args.rs_cache_dir,
+        )
+        hot_summary, hot_rows, hot_best = evaluate_benchmark(
+            cfg,
+            cfg.paths.data_dir / "test",
+            predictor,
+            cfg.paths.logs_dir,
+            tag="benchmark_cache_hot",
+            residual_alpha=float(args.residual_alpha),
+            use_rs_cache=True,
+            rs_cache_dir=args.rs_cache_dir,
+        )
+        rows = hot_rows
+        best = hot_best if hot_best.get("payload") is not None else cold_best
+        cstat = cold_summary.get("rs_cache_stats", {})
+        hstat = hot_summary.get("rs_cache_stats", {})
+        print(
+            f"Cold cache stats: hits={cstat.get('hits', 0)} misses={cstat.get('misses', 0)} "
+            f"hit_rate={100.0 * float(cstat.get('hit_rate', 0.0)):.2f}%"
+        )
+        print(
+            f"Hot cache stats: hits={hstat.get('hits', 0)} misses={hstat.get('misses', 0)} "
+            f"hit_rate={100.0 * float(hstat.get('hit_rate', 0.0)):.2f}%"
+        )
+    else:
+        hot_summary, rows, best = evaluate_benchmark(
+            cfg,
+            cfg.paths.data_dir / "test",
+            predictor,
+            cfg.paths.logs_dir,
+            tag="benchmark",
+            residual_alpha=float(args.residual_alpha),
+            use_rs_cache=False,
+            rs_cache_dir=args.rs_cache_dir,
+        )
+        cold_summary = hot_summary
+
+    _print_method_table(hot_summary)
+    imp = hot_summary["improvement_ours_vs_euclidean"]
     print(
         f"\nOurs vs Euclidean: expansion reduction={100.0 * imp['expansion_reduction_ratio']:.2f}% "
         f"time reduction={100.0 * imp['time_reduction_ratio']:.2f}%"
     )
-
-    print("\nPer-category (avg expansions):")
-    print("| category | euclidean | dubins | ours |")
-    print("|---|---:|---:|---:|")
-    for cat in ["A", "B", "C"]:
-        if cat not in summary["by_category"]:
-            continue
-        s = summary["by_category"][cat]
+    if "improvement_ours_vs_dubins" in hot_summary:
         print(
-            f"| {cat} | {s['euclidean']['avg_expansions']:.1f} | {s['dubins']['avg_expansions']:.1f} | {s['ours']['avg_expansions']:.1f} |"
+            "Ours vs Dubins: expansion reduction="
+            f"{100.0 * hot_summary['improvement_ours_vs_dubins']['expansion_reduction_ratio']:.2f}%"
+        )
+    if "improvement_ours_vs_rs_consistent" in hot_summary:
+        print(
+            "Ours vs RS-Consistent: expansion reduction="
+            f"{100.0 * hot_summary['improvement_ours_vs_rs_consistent']['expansion_reduction_ratio']:.2f}%"
         )
 
-    print("\n[4/4] Saving qualitative search-tree visualization...")
+    print("\nPer-category (avg expansions):")
+    print("| category | euclidean | dubins | rs_consistent | ours |")
+    print("|---|---:|---:|---:|---:|")
+    for cat in ["A", "B", "C"]:
+        if cat not in hot_summary["by_category"]:
+            continue
+        s = hot_summary["by_category"][cat]
+        print(
+            f"| {cat} | {s['euclidean']['avg_expansions']:.1f} | {s['dubins']['avg_expansions']:.1f} "
+            f"| {s['rs_consistent']['avg_expansions']:.1f} | {s['ours']['avg_expansions']:.1f} |"
+        )
+
+    _print_submission_table(cold_summary, hot_summary)
+    submission_csv = cfg.paths.logs_dir / "final_submission_table.csv"
+    _save_submission_csv(cold_summary, hot_summary, submission_csv)
+    save_efficiency_scatter(
+        hot_summary,
+        cfg.paths.figures_dir / "efficiency_scatter_cache_hot.png",
+        title="Efficiency-Quality Tradeoff (Cache Hot)",
+    )
+
+    print("\n[4/5] Saving qualitative search-tree visualization...")
     if best["payload"] is not None:
         p = best["payload"]
         save_search_tree_comparison(
@@ -160,6 +321,7 @@ def main() -> None:
             title=f"Type-C Heuristic Field ({p['scenario']})",
         )
 
+    print("\n[5/5] Writing final summary logs...")
     with (cfg.paths.logs_dir / "demo_summary.json").open("w", encoding="utf-8") as f:
         json.dump(
             {
@@ -170,11 +332,21 @@ def main() -> None:
                     "test_counts": list(args.test_counts),
                     "epochs": cfg.train.epochs,
                     "batch_size": cfg.train.batch_size,
+                    "learning_rate": cfg.train.learning_rate,
+                    "prediction_mode": cfg.train.prediction_mode,
+                    "underestimation_weight": cfg.train.underestimation_weight,
+                    "type_c_loss_weight": cfg.train.type_c_loss_weight,
+                    "residual_alpha": float(args.residual_alpha),
+                    "use_rs_cache": bool(args.use_rs_cache),
+                    "clear_rs_cache": bool(args.clear_rs_cache),
+                    "rs_cache_dir": str(args.rs_cache_dir),
                     "device": cfg.train.device,
                     "teacher_yaw_bins": cfg.dataset.teacher_yaw_bins,
+                    "teacher_mode": cfg.dataset.teacher_mode,
                 },
                 "train_metrics": metrics,
-                "benchmark_summary": summary,
+                "benchmark_summary_hot": hot_summary,
+                "benchmark_summary_cold": cold_summary,
                 "num_eval_cases": len(rows),
             },
             f,
@@ -183,6 +355,7 @@ def main() -> None:
 
     print("\nArtifacts:")
     print(f"- logs: {cfg.paths.logs_dir}")
+    print(f"- submission table: {submission_csv}")
     print(f"- figures: {cfg.paths.figures_dir}")
     print(f"- checkpoints: {cfg.paths.checkpoints_dir}")
 

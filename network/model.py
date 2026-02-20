@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from typing import Literal, cast
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+OutputActivation = Literal["softplus", "identity"]
 
 
 class ConvBlock(nn.Module):
@@ -27,7 +31,7 @@ class TinyUNet(nn.Module):
         in_channels: int = 5,
         out_channels: int = 24,
         base: int = 48,
-        output_activation: str = "softplus",
+        output_activation: OutputActivation = "softplus",
     ) -> None:
         super().__init__()
         self.inc = ConvBlock(in_channels, base)
@@ -37,8 +41,18 @@ class TinyUNet(nn.Module):
         self.up1_conv = ConvBlock(base * 4 + base * 2, base * 2)
         self.up2_conv = ConvBlock(base * 2 + base, base)
         self.out = nn.Conv2d(base, out_channels, kernel_size=1)
-        self.output_activation = str(output_activation).lower()
+        act = str(output_activation).lower()
+        if act not in {"softplus", "identity"}:
+            raise ValueError(f"Unsupported output_activation: {output_activation}")
+        self.output_activation = cast(OutputActivation, act)
         self.softplus = nn.Softplus(beta=1.0)
+
+    def _apply_output_activation(self, x: torch.Tensor) -> torch.Tensor:
+        if self.output_activation == "softplus":
+            return self.softplus(x)
+        if self.output_activation == "identity":
+            return x
+        raise ValueError(f"Unsupported output_activation: {self.output_activation}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x1 = self.inc(x)
@@ -54,8 +68,4 @@ class TinyUNet(nn.Module):
         x = self.up2_conv(x)
 
         x = self.out(x)
-        if self.output_activation == "softplus":
-            return self.softplus(x)
-        if self.output_activation == "identity":
-            return x
-        raise ValueError(f"Unsupported output_activation: {self.output_activation}")
+        return self._apply_output_activation(x)

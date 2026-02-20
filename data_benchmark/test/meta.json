@@ -18,5 +18,9 @@
   ],
   "fill_value": 1000000.0,
   "teacher_yaw_bins": 24,
-  "teacher_mode": "min(dubins_3d, dijkstra_2d + heading_proxy)"
+  "teacher_mode": "hybrid_rs_consistent_esdf",
+  "teacher_rs_backend": "auto",
+  "teacher_rs_step_size": 1.0,
+  "hybrid_obstacle_alpha": 0.0,
+  "hybrid_obstacle_threshold_m": 1.5
 }

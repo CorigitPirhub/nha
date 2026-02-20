@@ -189,3 +189,39 @@ def save_nonholonomic_field_comparison(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=170)
     plt.close(fig)
+
+
+def save_efficiency_scatter(summary: dict, out_path: Path, title: str = "Efficiency-Quality Tradeoff") -> None:
+    methods = ["euclidean", "dubins", "rs_consistent", "ours"]
+    labels = {
+        "euclidean": "Euclidean",
+        "dubins": "Dubins",
+        "rs_consistent": "RS-Analytical",
+        "ours": "Ours",
+    }
+    colors = {
+        "euclidean": "#1f77b4",
+        "dubins": "#ff7f0e",
+        "rs_consistent": "#2ca02c",
+        "ours": "#d62728",
+    }
+    m = summary.get("methods", {})
+    fig, ax = plt.subplots(1, 1, figsize=(6.5, 5), constrained_layout=True)
+    for k in methods:
+        if k not in m:
+            continue
+        v = m[k]
+        x = float(v.get("avg_time_total_ms", v.get("avg_time_ms", np.nan)))
+        y = float(v.get("avg_expansions", np.nan))
+        if not np.isfinite(x) or not np.isfinite(y):
+            continue
+        ax.scatter([x], [y], s=85, color=colors[k], label=labels[k], edgecolors="black", linewidths=0.6)
+        ax.annotate(labels[k], (x, y), textcoords="offset points", xytext=(6, 6), fontsize=9)
+    ax.set_xlabel("Total Runtime (ms)")
+    ax.set_ylabel("Average Expanded Nodes")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=170)
+    plt.close(fig)

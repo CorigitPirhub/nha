@@ -11,7 +11,13 @@ import numpy as np
 
 from config import ExperimentConfig
 from env.dubins import compute_dubins_field
-from env.reeds_shepp import RSConsistentCostConfig, compute_reeds_shepp_field
+from env.reeds_shepp import (
+    RSConsistentCostConfig,
+    compute_reeds_shepp_field,
+    load_rs_field_cache,
+    make_rs_field_cache_key,
+    save_rs_field_cache,
+)
 from network.inference import NeuralHeuristicPredictor
 from planner.heuristics import FieldHeuristic, ResidualYawFieldHeuristic, YawFieldHeuristic, euclidean_heuristic
 from planner.hybrid_astar import HybridAStarPlanner, PlanResult
@@ -204,8 +210,10 @@ def evaluate_benchmark(
     out_dir: Path,
     tag: str = "benchmark",
     neural_clip_override: float | None = None,
-    residual_alpha: float = 1.0,
+    residual_alpha: float | None = None,
     categories: set[str] | None = None,
+    use_rs_cache: bool = False,
+    rs_cache_dir: Path | None = None,
 ) -> tuple[dict, list[CaseMetrics], dict]:
     files = sorted(test_dir.glob("*.npz"))
     if not files:
@@ -214,7 +222,15 @@ def evaluate_benchmark(
     out_dir.mkdir(parents=True, exist_ok=True)
     rows: list[CaseMetrics] = []
     timing_rows: list[dict] = []
+    if residual_alpha is None:
+        residual_alpha = float(getattr(cfg.planner, "residual_alpha", 1.0))
     residual_alpha = float(max(residual_alpha, 0.0))
+    cache_hits = 0
+    cache_misses = 0
+    if use_rs_cache:
+        if rs_cache_dir is None:
+            rs_cache_dir = out_dir / "rs_cache"
+        rs_cache_dir.mkdir(parents=True, exist_ok=True)
     eval_yaw_bins = int(cfg.dataset.teacher_yaw_bins)
     if predictor.prediction_mode == "residual":
         eval_yaw_bins = int(predictor.out_channels)
@@ -278,18 +294,50 @@ def evaluate_benchmark(
 
         # Baseline 3: planner-consistent Reeds-Shepp analytic anchor.
         t_rs = time.perf_counter()
-        rs_cons_field = compute_reeds_shepp_field(
-            occupancy=occupancy,
-            goal=goal,
-            resolution=cfg.map.resolution,
-            yaw_bins=eval_yaw_bins,
-            rho=cfg.vehicle.min_turn_radius,
-            fill_value=cfg.dataset.max_teacher_value,
-            step_size=cfg.dataset.teacher_rs_step_size,
-            backend=cfg.dataset.teacher_rs_backend,
-            cost_mode="planner_consistent",
-            cost_cfg=rs_cost_cfg,
-        )
+        if use_rs_cache and rs_cache_dir is not None:
+            key = make_rs_field_cache_key(
+                occupancy=occupancy,
+                goal=goal,
+                resolution=cfg.map.resolution,
+                yaw_bins=eval_yaw_bins,
+                rho=cfg.vehicle.min_turn_radius,
+                step_size=cfg.dataset.teacher_rs_step_size,
+                backend=cfg.dataset.teacher_rs_backend,
+                cost_mode="planner_consistent",
+                cost_cfg=rs_cost_cfg,
+            )
+            rs_cached = load_rs_field_cache(rs_cache_dir, key)
+            if rs_cached is not None:
+                rs_cons_field = rs_cached
+                cache_hits += 1
+            else:
+                rs_cons_field = compute_reeds_shepp_field(
+                    occupancy=occupancy,
+                    goal=goal,
+                    resolution=cfg.map.resolution,
+                    yaw_bins=eval_yaw_bins,
+                    rho=cfg.vehicle.min_turn_radius,
+                    fill_value=cfg.dataset.max_teacher_value,
+                    step_size=cfg.dataset.teacher_rs_step_size,
+                    backend=cfg.dataset.teacher_rs_backend,
+                    cost_mode="planner_consistent",
+                    cost_cfg=rs_cost_cfg,
+                )
+                save_rs_field_cache(rs_cache_dir, key, rs_cons_field)
+                cache_misses += 1
+        else:
+            rs_cons_field = compute_reeds_shepp_field(
+                occupancy=occupancy,
+                goal=goal,
+                resolution=cfg.map.resolution,
+                yaw_bins=eval_yaw_bins,
+                rho=cfg.vehicle.min_turn_radius,
+                fill_value=cfg.dataset.max_teacher_value,
+                step_size=cfg.dataset.teacher_rs_step_size,
+                backend=cfg.dataset.teacher_rs_backend,
+                cost_mode="planner_consistent",
+                cost_cfg=rs_cost_cfg,
+            )
         rs_compute_ms = (time.perf_counter() - t_rs) * 1000.0
         rs_cons_anchor = YawFieldHeuristic(
             rs_cons_field,
@@ -432,7 +480,17 @@ def evaluate_benchmark(
     summary["eval_config"] = {
         "residual_alpha": residual_alpha,
         "categories": sorted(list(categories)) if categories is not None else ["A", "B", "C", "U"],
+        "use_rs_cache": bool(use_rs_cache),
+        "rs_cache_dir": str(rs_cache_dir) if rs_cache_dir is not None else None,
     }
+    if use_rs_cache:
+        total = cache_hits + cache_misses
+        summary["rs_cache_stats"] = {
+            "hits": int(cache_hits),
+            "misses": int(cache_misses),
+            "hit_rate": float(cache_hits / total) if total > 0 else 0.0,
+            "cache_dir": str(rs_cache_dir) if rs_cache_dir is not None else None,
+        }
 
     csv_path = out_dir / f"{tag}_cases.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:

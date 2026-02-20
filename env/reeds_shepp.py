@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Tuple
 
 import numpy as np
@@ -371,3 +373,73 @@ def compute_reeds_shepp_field(
         rho=rho,
         fill_value=fill_value,
     )
+
+
+def make_rs_field_cache_key(
+    occupancy: np.ndarray,
+    goal: Tuple[float, float, float],
+    resolution: float,
+    yaw_bins: int,
+    rho: float,
+    step_size: float,
+    backend: str,
+    cost_mode: str,
+    cost_cfg: RSConsistentCostConfig | None = None,
+) -> str:
+    h = hashlib.sha1()
+    occ_u8 = np.ascontiguousarray(occupancy.astype(np.uint8))
+    h.update(occ_u8.tobytes())
+    meta = np.asarray(
+        [
+            float(goal[0]),
+            float(goal[1]),
+            float(goal[2]),
+            float(resolution),
+            float(yaw_bins),
+            float(rho),
+            float(step_size),
+        ],
+        dtype=np.float32,
+    )
+    h.update(meta.tobytes())
+    h.update(str(backend).lower().encode("utf-8"))
+    h.update(str(cost_mode).lower().encode("utf-8"))
+    if cost_cfg is not None:
+        cost_meta = np.asarray(
+            [
+                float(cost_cfg.reverse_penalty),
+                float(cost_cfg.steer_penalty),
+                float(cost_cfg.steer_change_penalty),
+                float(cost_cfg.step_size),
+                float(cost_cfg.wheel_base),
+                float(cost_cfg.max_steer_rad),
+            ],
+            dtype=np.float32,
+        )
+        h.update(cost_meta.tobytes())
+    return h.hexdigest()
+
+
+def rs_field_cache_path(cache_dir: Path, key: str) -> Path:
+    return Path(cache_dir) / f"rs_field_{key}.npy"
+
+
+def load_rs_field_cache(cache_dir: Path, key: str) -> np.ndarray | None:
+    path = rs_field_cache_path(cache_dir, key)
+    if not path.exists():
+        return None
+    try:
+        arr = np.load(path, allow_pickle=False)
+    except Exception:
+        return None
+    if not isinstance(arr, np.ndarray):
+        return None
+    return arr.astype(np.float32, copy=False)
+
+
+def save_rs_field_cache(cache_dir: Path, key: str, field: np.ndarray) -> Path:
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = rs_field_cache_path(cache_dir, key)
+    np.save(path, field.astype(np.float32))
+    return path

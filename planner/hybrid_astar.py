@@ -4,13 +4,19 @@ import heapq
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from config import PlannerConfig, VehicleConfig
 from planner.heuristics import HeuristicFn, compose_guidance, euclidean_heuristic
 from utils.common import bilinear_interpolate, wrap_to_pi
+
+State = Tuple[float, float, float]
+StateKey = Tuple[int, int, int]
+HeuristicPairFn = Callable[[float, float, float], Tuple[float, float]]
+OpenQueueItem = Tuple[float, float, int, StateKey]
+AnchorQueueItem = Tuple[float, int, StateKey]
 
 
 @dataclass
@@ -21,7 +27,7 @@ class NodeRecord:
     g: float
     anchor: float
     guided: float
-    parent: Optional[Tuple[int, int, int]]
+    parent: Optional[StateKey]
     steer: float
     direction: int
 
@@ -65,8 +71,8 @@ class HybridAStarPlanner:
 
     def plan(
         self,
-        start: Tuple[float, float, float],
-        goal: Tuple[float, float, float],
+        start: State,
+        goal: State,
         guidance_fn: Optional[HeuristicFn] = None,
         anchor_fn: Optional[HeuristicFn] = None,
         main_mode: str = "anchor",
@@ -138,9 +144,9 @@ class HybridAStarPlanner:
 
     def _search(
         self,
-        start: Tuple[float, float, float],
-        goal: Tuple[float, float, float],
-        h_pair,
+        start: State,
+        goal: State,
+        h_pair: HeuristicPairFn,
         mode: str,
         max_expansions: int,
         upper_bound: float,
@@ -150,7 +156,7 @@ class HybridAStarPlanner:
         start_key = self._state_key(*start)
         a0, g0 = h_pair(*start)
 
-        records: Dict[Tuple[int, int, int], NodeRecord] = {
+        records: Dict[StateKey, NodeRecord] = {
             start_key: NodeRecord(
                 x=float(start[0]),
                 y=float(start[1]),
@@ -164,15 +170,15 @@ class HybridAStarPlanner:
             )
         }
 
-        open_heap: List[Tuple[float, float, int, Tuple[int, int, int]]] = []
-        anchor_heap: List[Tuple[float, int, Tuple[int, int, int]]] = []
+        open_heap: List[OpenQueueItem] = []
+        anchor_heap: List[AnchorQueueItem] = []
         counter = 0
         p0, s0 = self._priority(records[start_key], mode)
         heapq.heappush(open_heap, (p0, s0, counter, start_key))
         heapq.heappush(anchor_heap, (records[start_key].g + records[start_key].anchor, counter, start_key))
 
-        expanded_best_g: Dict[Tuple[int, int, int], float] = {}
-        best_goal_key: Optional[Tuple[int, int, int]] = None
+        expanded_best_g: Dict[StateKey, float] = {}
+        best_goal_key: Optional[StateKey] = None
         best_goal_cost = float(upper_bound)
         expansions = 0
         expanded_xy: List[Tuple[float, float]] = []
@@ -296,8 +302,8 @@ class HybridAStarPlanner:
 
     def _peek_min_anchor(
         self,
-        anchor_heap: List[Tuple[float, int, Tuple[int, int, int]]],
-        records: Dict[Tuple[int, int, int], NodeRecord],
+        anchor_heap: List[AnchorQueueItem],
+        records: Dict[StateKey, NodeRecord],
     ) -> float:
         while anchor_heap:
             f_anchor, _, key = anchor_heap[0]
@@ -312,7 +318,7 @@ class HybridAStarPlanner:
             return float(expected)
         return np.inf
 
-    def _is_goal(self, x: float, y: float, yaw: float, goal: Tuple[float, float, float]) -> bool:
+    def _is_goal(self, x: float, y: float, yaw: float, goal: State) -> bool:
         d = math.hypot(goal[0] - x, goal[1] - y)
         if d > self.cfg.goal_tolerance_xy:
             return False
@@ -327,7 +333,7 @@ class HybridAStarPlanner:
         c += self.cfg.steer_change_penalty * abs(steer - prev_steer) / max(self.max_steer, 1e-3) * step
         return c
 
-    def _simulate(self, x: float, y: float, yaw: float, steer: float, direction: int) -> Optional[Tuple[float, float, float]]:
+    def _simulate(self, x: float, y: float, yaw: float, steer: float, direction: int) -> Optional[State]:
         n = max(1, int(np.ceil(self.cfg.step_size / self.cfg.collision_check_step)))
         ds = self.cfg.step_size / n
 
@@ -358,7 +364,7 @@ class HybridAStarPlanner:
         gy = int(np.clip(np.floor(y / self.resolution), 0, self.h - 1))
         return not bool(self.occupancy[gy, gx])
 
-    def _state_key(self, x: float, y: float, yaw: float) -> Tuple[int, int, int]:
+    def _state_key(self, x: float, y: float, yaw: float) -> StateKey:
         gx = int(np.clip(np.floor(x / self.resolution), 0, self.w - 1))
         gy = int(np.clip(np.floor(y / self.resolution), 0, self.h - 1))
         theta = wrap_to_pi(yaw)
@@ -367,11 +373,11 @@ class HybridAStarPlanner:
 
     def _reconstruct_path(
         self,
-        goal_key: Tuple[int, int, int],
-        records: Dict[Tuple[int, int, int], NodeRecord],
+        goal_key: StateKey,
+        records: Dict[StateKey, NodeRecord],
     ) -> np.ndarray:
         rev: List[Tuple[float, float, float]] = []
-        key: Optional[Tuple[int, int, int]] = goal_key
+        key: Optional[StateKey] = goal_key
         while key is not None:
             rec = records[key]
             rev.append((rec.x, rec.y, rec.yaw))

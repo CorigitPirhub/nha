@@ -13,7 +13,7 @@ from config import DEFAULT_CONFIG
 from network.inference import NeuralHeuristicPredictor
 from planner.evaluate import evaluate_benchmark
 from utils.common import ensure_dirs, set_seed
-from utils.visualization import save_nonholonomic_field_comparison, save_search_tree_comparison
+from utils.visualization import save_efficiency_scatter, save_nonholonomic_field_comparison, save_search_tree_comparison
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--residual-alpha",
         type=float,
-        default=1.0,
+        default=DEFAULT_CONFIG.planner.residual_alpha,
         help="Residual gain alpha for residual predictor: h = h_rs + alpha * delta_h.",
     )
     p.add_argument(
@@ -48,6 +48,23 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="A,B,C",
         help="Comma separated categories to evaluate, e.g. A,B,C or C.",
+    )
+    p.add_argument(
+        "--use-rs-cache",
+        action="store_true",
+        help="Enable loading/saving planner-consistent RS fields from cache.",
+    )
+    p.add_argument(
+        "--rs-cache-dir",
+        type=Path,
+        default=Path("outputs/rs_cache"),
+        help="Directory for RS cache files.",
+    )
+    p.add_argument(
+        "--scatter-out",
+        type=Path,
+        default=Path("outputs/figures/efficiency_scatter.png"),
+        help="Output path for efficiency scatter plot.",
     )
     p.add_argument(
         "--skip-figures",
@@ -103,6 +120,8 @@ def main() -> None:
         neural_clip_override=clip_override,
         residual_alpha=float(args.residual_alpha),
         categories=categories if categories else None,
+        use_rs_cache=bool(args.use_rs_cache),
+        rs_cache_dir=args.rs_cache_dir,
     )
 
     print("\n[Overall Benchmark]")
@@ -110,6 +129,12 @@ def main() -> None:
     ec = summary.get("eval_config", {})
     if ec:
         print(f"\nEval config: residual_alpha={ec.get('residual_alpha', 1.0)} categories={ec.get('categories', [])}")
+    cs = summary.get("rs_cache_stats")
+    if cs:
+        print(
+            f"RS cache: hits={cs['hits']} misses={cs['misses']} "
+            f"hit_rate={100.0 * cs['hit_rate']:.2f}% dir={cs['cache_dir']}"
+        )
     imp = summary["improvement_ours_vs_euclidean"]
     print(
         f"\nOurs vs Euclidean: expansion reduction={100.0 * imp['expansion_reduction_ratio']:.2f}% "
@@ -135,6 +160,7 @@ def main() -> None:
 
     with (cfg.paths.logs_dir / "benchmark_summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+    save_efficiency_scatter(summary, args.scatter_out, title="Efficiency-Quality Tradeoff")
 
     if (not args.skip_figures) and best["payload"] is not None:
         p = best["payload"]

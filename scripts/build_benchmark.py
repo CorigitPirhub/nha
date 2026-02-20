@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -10,6 +11,13 @@ if str(ROOT) not in sys.path:
 
 from config import DEFAULT_CONFIG
 from env.dataset_builder import describe_split, generate_benchmark_split
+from env.reeds_shepp import (
+    RSConsistentCostConfig,
+    compute_reeds_shepp_field,
+    load_rs_field_cache,
+    make_rs_field_cache_key,
+    save_rs_field_cache,
+)
 from utils.common import set_seed
 
 
@@ -38,7 +46,61 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--teacher-rs-step-size", type=float, default=DEFAULT_CONFIG.dataset.teacher_rs_step_size)
     p.add_argument("--hybrid-alpha", type=float, default=DEFAULT_CONFIG.dataset.hybrid_obstacle_alpha)
     p.add_argument("--hybrid-threshold", type=float, default=DEFAULT_CONFIG.dataset.hybrid_obstacle_threshold_m)
+    p.add_argument(
+        "--precompute-rs-cache",
+        action="store_true",
+        help="Precompute and save planner-consistent RS fields for train/val/test splits.",
+    )
+    p.add_argument(
+        "--rs-cache-dir",
+        type=Path,
+        default=None,
+        help="Directory for RS cache files; default is <output>/rs_cache.",
+    )
     return p.parse_args()
+
+
+def _precompute_rs_cache(split_dir: Path, cache_dir: Path, cfg) -> tuple[int, int]:
+    files = sorted((split_dir).glob("*.npz"))
+    if not files:
+        return 0, 0
+    cost_cfg = RSConsistentCostConfig.from_configs(cfg.vehicle, cfg.planner)
+    hits = 0
+    misses = 0
+    for f in files:
+        with np.load(f, allow_pickle=False) as data:
+            occupancy = data["occupancy"].astype(bool)
+            goal = tuple(float(v) for v in data["goal"].astype(np.float32))
+        key = make_rs_field_cache_key(
+            occupancy=occupancy,
+            goal=goal,
+            resolution=cfg.map.resolution,
+            yaw_bins=cfg.dataset.teacher_yaw_bins,
+            rho=cfg.vehicle.min_turn_radius,
+            step_size=cfg.dataset.teacher_rs_step_size,
+            backend=cfg.dataset.teacher_rs_backend,
+            cost_mode="planner_consistent",
+            cost_cfg=cost_cfg,
+        )
+        cached = load_rs_field_cache(cache_dir, key)
+        if cached is not None:
+            hits += 1
+            continue
+        field = compute_reeds_shepp_field(
+            occupancy=occupancy,
+            goal=goal,
+            resolution=cfg.map.resolution,
+            yaw_bins=cfg.dataset.teacher_yaw_bins,
+            rho=cfg.vehicle.min_turn_radius,
+            fill_value=cfg.dataset.max_teacher_value,
+            step_size=cfg.dataset.teacher_rs_step_size,
+            backend=cfg.dataset.teacher_rs_backend,
+            cost_mode="planner_consistent",
+            cost_cfg=cost_cfg,
+        )
+        save_rs_field_cache(cache_dir, key, field)
+        misses += 1
+    return hits, misses
 
 
 def main() -> None:
@@ -89,6 +151,16 @@ def main() -> None:
         f"hybrid_alpha={cfg.dataset.hybrid_obstacle_alpha:.3f} "
         f"hybrid_threshold={cfg.dataset.hybrid_obstacle_threshold_m:.2f}"
     )
+
+    if args.precompute_rs_cache:
+        cache_dir = args.rs_cache_dir if args.rs_cache_dir is not None else (args.output / "rs_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        stats = {}
+        for split in ["train", "val", "test"]:
+            h, m = _precompute_rs_cache(args.output / split, cache_dir, cfg)
+            stats[split] = {"hits": int(h), "misses": int(m)}
+        print(f"rs cache precompute done: dir={cache_dir}")
+        print(stats)
 
 
 if __name__ == "__main__":

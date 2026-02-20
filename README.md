@@ -46,53 +46,113 @@ Outputs:
 - `outputs/figures/stage1_diagnosis_heatmaps.png`
 - `outputs/logs/stage1_diagnosis.json`
 
+## Quick Start (Best Residual Setup)
+
+```bash
+python scripts/run_demo.py --seed 7 --device cuda --use-rs-cache
+```
+
+This uses the best validated defaults:
+
+- residual learning (`prediction_mode=residual`)
+- planner-consistent hybrid RS teacher (`teacher_mode=hybrid_rs_consistent_esdf`)
+- residual gain `alpha=1.1`
+- RS cache enabled for repeated evaluation runs
+
 ## Build Fixed Benchmark (Type A/B/C)
 
 ```bash
-python scripts/build_benchmark.py --output data_benchmark --train-counts 18 18 18 --val-counts 6 6 6 --test-counts 8 8 8
+python scripts/build_benchmark.py --output data_benchmark --seed 7 --train-counts 18 18 18 --val-counts 6 6 6 --test-counts 8 8 8 --precompute-rs-cache
 ```
 
-## Train (GPU)
+## Train (GPU, Best Hyperparameters)
 
 ```bash
-python scripts/train.py --data data_benchmark --epochs 12 --batch-size 8 --device cuda
+python scripts/train.py --data data_costaware --seed 7 --prediction-mode residual --epochs 60 --lr 2e-4 --under-weight 1.0 --type-c-weight 1.0 --device cuda
 ```
 
-## Evaluate (3-way)
+## Evaluate (4-way + Time Breakdown + Optional RS Cache)
 
 ```bash
-python scripts/evaluate.py --data data_benchmark --checkpoint outputs/checkpoints/heuristic_net.pt --device cuda
+python scripts/evaluate.py --data data_benchmark --seed 7 --checkpoint outputs/checkpoints/heuristic_net_residual_costaware_scratch_u1_lr2e4.pt --residual-alpha 1.1 --device cuda
+python scripts/evaluate.py --data data_benchmark --seed 7 --checkpoint outputs/checkpoints/heuristic_net_residual_costaware_scratch_u1_lr2e4.pt --residual-alpha 1.1 --use-rs-cache --device cuda
+```
+
+Recommended cache reproducibility flow (same `--rs-cache-dir` for both runs):
+
+```bash
+# cold run: populate cache (expect low hit rate)
+python scripts/evaluate.py --data data_benchmark --seed 7 --checkpoint outputs/checkpoints/heuristic_net_residual_costaware_scratch_u1_lr2e4.pt --residual-alpha 1.1 --use-rs-cache --rs-cache-dir outputs/rs_cache_benchmark_v1 --scatter-out outputs/figures/efficiency_scatter_cache_cold.png --device cuda
+
+# hot run: reuse cache (expect hit_rate ~= 100%)
+python scripts/evaluate.py --data data_benchmark --seed 7 --checkpoint outputs/checkpoints/heuristic_net_residual_costaware_scratch_u1_lr2e4.pt --residual-alpha 1.1 --use-rs-cache --rs-cache-dir outputs/rs_cache_benchmark_v1 --scatter-out outputs/figures/efficiency_scatter_cache_hot.png --device cuda
+```
+
+Optional build-time cache precompute:
+
+```bash
+python scripts/build_benchmark.py --output data_benchmark --seed 7 --train-counts 18 18 18 --val-counts 6 6 6 --test-counts 8 8 8 --precompute-rs-cache --rs-cache-dir outputs/rs_cache_benchmark_v1
 ```
 
 Compared methods:
 
 - `Hybrid A* + Euclidean` (Baseline 1)
 - `Hybrid A* + Dubins` (Baseline 2, clipped analytic nonholonomic heuristic)
-- `Hybrid A* + Ours` (learned nonholonomic neural heuristic)
+- `Hybrid A* + RS-Consistent Analytical` (Baseline 3)
+- `Hybrid A* + Ours` (RS + neural residual correction)
 
 Generated figures:
 
 - `outputs/figures/nonholonomic_field_compare.png`
 - `outputs/figures/search_tree_type_c_compare.png`
 - `outputs/figures/training_curve.png`
+- `outputs/figures/efficiency_scatter.png`
 
 ## One-Command Demo
 
 ```bash
-python scripts/run_demo.py --seed 7 --train-counts 18 18 18 --val-counts 6 6 6 --test-counts 8 8 8 --epochs 12 --batch-size 8 --device cuda
+python scripts/run_demo.py --seed 7 --train-counts 18 18 18 --val-counts 6 6 6 --test-counts 8 8 8 --epochs 12 --batch-size 8 --device cuda --use-rs-cache
 ```
 
-## Latest Run Snapshot
+## Reproducibility
 
-From the latest benchmark run (`24` test cases total):
+All reported results use fixed random seed `7` for scripts. Dataset splits are generated deterministically via offset seeds (`seed + 101/202/303`) in builders, so repeated runs on the same environment should match split composition and metric trends.
 
-- Euclidean: success `0.917`, avg expansions `10165.5`
-- Dubins: success `0.917`, avg expansions `4820.5`
-- Ours: success `0.917`, avg expansions `10828.3`
-- Ours vs Euclidean (overall): expansion reduction `+1.14%`
-- Type C (parking/deadend):
-  - Euclidean avg expansions `15000.6`
-  - Ours avg expansions `12502.4` (notable reduction)
+## Official Results (Submission Snapshot)
+
+Source logs:
+
+- `outputs/logs/final_efficiency_report.json`
+- `outputs/logs/final_submission_table.csv`
+- `outputs/logs/benchmark_summary_alpha1.1_nocache_v2.json`
+- `outputs/logs/benchmark_summary_alpha1.1_cache_hot_v1.json`
+
+Type-C key result (24 benchmark cases total):
+
+- RS-Consistent: `5719.4` expansions
+- Ours: `5700.3` expansions (slight improvement)
+
+No-cache runtime summary (avg total ms):
+
+| Method | Avg Expansions | Avg Total Time (ms) |
+|---|---:|---:|
+| Euclidean | 10165.5 | 1280.27 |
+| Dubins | 4820.5 | 967.27 |
+| RS-Consistent | 2783.9 | 10978.05 |
+| Ours | 2803.2 | 11087.47 |
+
+Cache-hot runtime summary (`hits=24, misses=0`, avg total ms):
+
+| Method | Avg Expansions | Avg Total Time (ms) |
+|---|---:|---:|
+| Euclidean | 10165.5 | 1379.97 |
+| Dubins | 4820.5 | 1058.08 |
+| RS-Consistent | 2783.9 | 571.41 |
+| Ours | 2803.2 | 661.52 |
+
+Final efficiency plot (cache hot):
+
+![Efficiency-Quality Scatter (Cache Hot)](outputs/figures/efficiency_scatter_cache_hot.png)
 
 ## Notes
 

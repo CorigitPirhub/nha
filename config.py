@@ -33,6 +33,7 @@ class PlannerConfig:
     reverse_penalty: float = 1.2
     steer_penalty: float = 0.05
     steer_change_penalty: float = 0.05
+    residual_alpha: float = 1.1
     guidance_blend: float = 0.70
     warm_start_budget: int = 0
 
@@ -46,7 +47,7 @@ class DatasetConfig:
     min_start_goal_dist_m: float = 8.0
     max_teacher_value: float = 1e6
     teacher_yaw_bins: int = 24
-    teacher_mode: str = "dubins_proxy"
+    teacher_mode: str = "hybrid_rs_consistent_esdf"
     teacher_rs_backend: str = "auto"
     teacher_rs_step_size: float = 1.0
     hybrid_obstacle_alpha: float = 0.0
