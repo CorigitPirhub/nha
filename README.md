@@ -76,6 +76,9 @@ python scripts/train.py --data data_costaware --seed 7 --prediction-mode residua
 ```bash
 python scripts/evaluate.py --data data_benchmark --seed 7 --checkpoint outputs/checkpoints/heuristic_net_residual_costaware_scratch_u1_lr2e4.pt --residual-alpha 1.1 --device cuda
 python scripts/evaluate.py --data data_benchmark --seed 7 --checkpoint outputs/checkpoints/heuristic_net_residual_costaware_scratch_u1_lr2e4.pt --residual-alpha 1.1 --use-rs-cache --device cuda
+
+# export planning-process animation (mp4; auto-fallback to gif if ffmpeg unavailable)
+python scripts/evaluate.py --data data_benchmark --seed 7 --checkpoint outputs/checkpoints/heuristic_net_residual_costaware_scratch_u1_lr2e4.pt --residual-alpha 1.1 --animation-out outputs/figures/planning_process.mp4 --device cuda
 ```
 
 Recommended cache reproducibility flow (same `--rs-cache-dir` for both runs):

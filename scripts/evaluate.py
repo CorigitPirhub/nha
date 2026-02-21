@@ -13,7 +13,12 @@ from config import DEFAULT_CONFIG
 from network.inference import NeuralHeuristicPredictor
 from planner.evaluate import evaluate_benchmark
 from utils.common import ensure_dirs, set_seed
-from utils.visualization import save_efficiency_scatter, save_nonholonomic_field_comparison, save_search_tree_comparison
+from utils.visualization import (
+    save_efficiency_scatter,
+    save_nonholonomic_field_comparison,
+    save_search_progress_animation,
+    save_search_tree_comparison,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +75,23 @@ def parse_args() -> argparse.Namespace:
         "--skip-figures",
         action="store_true",
         help="Skip qualitative figure generation for faster, non-blocking benchmark runs.",
+    )
+    p.add_argument(
+        "--no-animation",
+        action="store_true",
+        help="Disable planning-process animation export.",
+    )
+    p.add_argument(
+        "--animation-out",
+        type=Path,
+        default=Path("outputs/figures/planning_process.mp4"),
+        help="Output path for planning animation (.mp4/.gif).",
+    )
+    p.add_argument(
+        "--animation-fps",
+        type=int,
+        default=20,
+        help="Animation frame rate.",
     )
     return p.parse_args()
 
@@ -196,6 +218,21 @@ def main() -> None:
             out_path=cfg.paths.figures_dir / "teacher_dubins_vs_rs_consistent.png",
             title=f"Type-C Teacher Compare ({p['scenario']})",
         )
+        if not args.no_animation:
+            anim_path = save_search_progress_animation(
+                occupancy=p["occupancy"],
+                euclidean_expanded=p["euclidean_expanded"],
+                ours_expanded=p["ours_expanded"],
+                euclidean_path=p["euclidean_path"],
+                ours_path=p["ours_path"],
+                resolution=cfg.map.resolution,
+                start=tuple(float(v) for v in p["start"]),
+                goal=tuple(float(v) for v in p["goal"]),
+                out_path=args.animation_out,
+                title=f"Type-C Planning Process ({p['scenario']})",
+                fps=max(int(args.animation_fps), 1),
+            )
+            print(f"Saved planning animation: {anim_path}")
 
     print(f"Saved logs under: {cfg.paths.logs_dir}")
     print(f"Saved figures under: {cfg.paths.figures_dir}")

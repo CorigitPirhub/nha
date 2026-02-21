@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 from utils.common import yaw_to_bin_float
@@ -225,3 +226,159 @@ def save_efficiency_scatter(summary: dict, out_path: Path, title: str = "Efficie
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=170)
     plt.close(fig)
+
+
+def _to_grid_xy(points: np.ndarray, resolution: float, max_points: int) -> np.ndarray:
+    if points is None:
+        return np.zeros((0, 2), dtype=np.float32)
+    arr = np.asarray(points, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        return np.zeros((0, 2), dtype=np.float32)
+    xy = arr[:, :2]
+    if xy.shape[0] > max_points:
+        idx = np.linspace(0, xy.shape[0] - 1, max_points, dtype=np.int32)
+        xy = xy[idx]
+    gx = xy[:, 0] / float(resolution) - 0.5
+    gy = xy[:, 1] / float(resolution) - 0.5
+    return np.stack([gx, gy], axis=1).astype(np.float32)
+
+
+def _try_save_animation(anim: animation.FuncAnimation, out_path: Path, fps: int, dpi: int) -> Path:
+    out_path = Path(out_path)
+    ext = out_path.suffix.lower()
+    if ext not in {".mp4", ".gif"}:
+        out_path = out_path.with_suffix(".mp4")
+        ext = ".mp4"
+    has_ffmpeg = animation.writers.is_available("ffmpeg")
+    has_pillow = animation.writers.is_available("pillow")
+
+    if ext == ".gif":
+        if not has_pillow:
+            raise RuntimeError("GIF export requires matplotlib pillow writer. Please install pillow.")
+        anim.save(out_path, writer="pillow", fps=fps, dpi=dpi)
+        return out_path
+
+    if has_ffmpeg:
+        try:
+            anim.save(out_path, writer="ffmpeg", fps=fps, dpi=dpi, bitrate=1800)
+            return out_path
+        except Exception:
+            pass
+
+    if not has_pillow:
+        raise RuntimeError(
+            "MP4 export failed and GIF fallback is unavailable (pillow writer missing). "
+            "Install ffmpeg or pillow."
+        )
+    fallback = out_path.with_suffix(".gif")
+    anim.save(fallback, writer="pillow", fps=min(max(fps, 1), 20), dpi=dpi)
+    return fallback
+
+
+def save_search_progress_animation(
+    occupancy: np.ndarray,
+    euclidean_expanded: np.ndarray,
+    ours_expanded: np.ndarray,
+    euclidean_path: np.ndarray,
+    ours_path: np.ndarray,
+    resolution: float,
+    start: tuple[float, float, float],
+    goal: tuple[float, float, float],
+    out_path: Path,
+    title: str = "Planning Process Animation",
+    fps: int = 20,
+    max_frames: int = 220,
+    max_expand_points: int = 4500,
+) -> Path:
+    eu_exp_xy = _to_grid_xy(euclidean_expanded, resolution, max_expand_points)
+    ou_exp_xy = _to_grid_xy(ours_expanded, resolution, max_expand_points)
+    eu_path_xy = _to_grid_xy(euclidean_path, resolution, max_expand_points)
+    ou_path_xy = _to_grid_xy(ours_path, resolution, max_expand_points)
+
+    sx = start[0] / resolution - 0.5
+    sy = start[1] / resolution - 0.5
+    gx = goal[0] / resolution - 0.5
+    gy = goal[1] / resolution - 0.5
+
+    n_expand_frames = max(20, int(max_frames * 0.72))
+    n_path_frames = max(12, int(max_frames * 0.20))
+    n_hold_frames = max(8, max_frames - n_expand_frames - n_path_frames)
+    total_frames = n_expand_frames + n_path_frames + n_hold_frames
+
+    eu_expand_progress = np.linspace(0, eu_exp_xy.shape[0], n_expand_frames, dtype=np.int32)
+    ou_expand_progress = np.linspace(0, ou_exp_xy.shape[0], n_expand_frames, dtype=np.int32)
+    eu_path_progress = np.linspace(0, eu_path_xy.shape[0], n_path_frames, dtype=np.int32)
+    ou_path_progress = np.linspace(0, ou_path_xy.shape[0], n_path_frames, dtype=np.int32)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+    styles = [
+        (axes[0], "Euclidean", eu_exp_xy, eu_path_xy),
+        (axes[1], "Ours (RS + Residual)", ou_exp_xy, ou_path_xy),
+    ]
+    scatters = []
+    lines = []
+    for ax, name, _, _ in styles:
+        ax.imshow(occupancy, cmap="gray_r", origin="lower")
+        sc = ax.scatter([], [], s=1.5, c="deepskyblue", alpha=0.45, linewidths=0)
+        ln, = ax.plot([], [], color="orange", linewidth=2.2)
+        ax.scatter([sx], [sy], c="lime", s=60, edgecolors="black", zorder=5)
+        ax.scatter([gx], [gy], c="red", s=60, edgecolors="black", zorder=5)
+        ax.set_title(name)
+        ax.set_axis_off()
+        scatters.append(sc)
+        lines.append(ln)
+
+    def _set_offsets(scatter_obj, pts: np.ndarray) -> None:
+        if pts.shape[0] == 0:
+            scatter_obj.set_offsets(np.zeros((0, 2), dtype=np.float32))
+            return
+        scatter_obj.set_offsets(pts)
+
+    def _set_line(line_obj, pts: np.ndarray) -> None:
+        if pts.shape[0] == 0:
+            line_obj.set_data([], [])
+            return
+        line_obj.set_data(pts[:, 0], pts[:, 1])
+
+    def _update(frame_idx: int):
+        if frame_idx < n_expand_frames:
+            e_n = int(eu_expand_progress[frame_idx])
+            o_n = int(ou_expand_progress[frame_idx])
+            _set_offsets(scatters[0], eu_exp_xy[:e_n])
+            _set_offsets(scatters[1], ou_exp_xy[:o_n])
+            _set_line(lines[0], np.zeros((0, 2), dtype=np.float32))
+            _set_line(lines[1], np.zeros((0, 2), dtype=np.float32))
+            pct = int((frame_idx + 1) * 100 / max(n_expand_frames, 1))
+            fig.suptitle(f"{title} | Search Expansion {pct}%")
+        elif frame_idx < n_expand_frames + n_path_frames:
+            p_idx = frame_idx - n_expand_frames
+            e_n = int(eu_path_progress[p_idx])
+            o_n = int(ou_path_progress[p_idx])
+            _set_offsets(scatters[0], eu_exp_xy)
+            _set_offsets(scatters[1], ou_exp_xy)
+            _set_line(lines[0], eu_path_xy[:e_n])
+            _set_line(lines[1], ou_path_xy[:o_n])
+            pct = int((p_idx + 1) * 100 / max(n_path_frames, 1))
+            fig.suptitle(f"{title} | Path Reconstruction {pct}%")
+        else:
+            _set_offsets(scatters[0], eu_exp_xy)
+            _set_offsets(scatters[1], ou_exp_xy)
+            _set_line(lines[0], eu_path_xy)
+            _set_line(lines[1], ou_path_xy)
+            fig.suptitle(f"{title} | Completed")
+        return [*scatters, *lines]
+
+    anim = animation.FuncAnimation(
+        fig,
+        _update,
+        frames=total_frames,
+        interval=1000.0 / max(int(fps), 1),
+        blit=False,
+        repeat=False,
+    )
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        return _try_save_animation(anim, out_path=out_path, fps=max(int(fps), 1), dpi=150)
+    finally:
+        plt.close(fig)

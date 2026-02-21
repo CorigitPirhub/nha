@@ -22,6 +22,7 @@ from utils.common import ensure_dirs, set_seed
 from utils.visualization import (
     save_efficiency_scatter,
     save_nonholonomic_field_comparison,
+    save_search_progress_animation,
     save_search_tree_comparison,
     save_training_curve,
 )
@@ -59,6 +60,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--data-dir", type=Path, default=Path("data_benchmark"))
     p.add_argument("--output-dir", type=Path, default=Path("outputs"))
+    p.add_argument(
+        "--no-animation",
+        action="store_true",
+        help="Disable planning-process animation export.",
+    )
+    p.add_argument(
+        "--animation-out",
+        type=Path,
+        default=None,
+        help="Output path for planning animation (.mp4/.gif). Default: <output-dir>/figures/planning_process_demo.mp4",
+    )
+    p.add_argument("--animation-fps", type=int, default=20, help="Animation frame rate.")
     return p.parse_args()
 
 
@@ -294,6 +307,7 @@ def main() -> None:
         cfg.paths.figures_dir / "efficiency_scatter_cache_hot.png",
         title="Efficiency-Quality Tradeoff (Cache Hot)",
     )
+    anim_path = None
 
     print("\n[4/5] Saving qualitative search-tree visualization...")
     if best["payload"] is not None:
@@ -320,6 +334,22 @@ def main() -> None:
             out_path=cfg.paths.figures_dir / "nonholonomic_field_compare.png",
             title=f"Type-C Heuristic Field ({p['scenario']})",
         )
+        if not args.no_animation:
+            anim_out = args.animation_out if args.animation_out is not None else (cfg.paths.figures_dir / "planning_process_demo.mp4")
+            anim_path = save_search_progress_animation(
+                occupancy=p["occupancy"],
+                euclidean_expanded=p["euclidean_expanded"],
+                ours_expanded=p["ours_expanded"],
+                euclidean_path=p["euclidean_path"],
+                ours_path=p["ours_path"],
+                resolution=cfg.map.resolution,
+                start=tuple(float(v) for v in p["start"]),
+                goal=tuple(float(v) for v in p["goal"]),
+                out_path=anim_out,
+                title=f"Type-C Planning Process ({p['scenario']})",
+                fps=max(int(args.animation_fps), 1),
+            )
+            print(f"Saved planning animation: {anim_path}")
 
     print("\n[5/5] Writing final summary logs...")
     with (cfg.paths.logs_dir / "demo_summary.json").open("w", encoding="utf-8") as f:
@@ -357,6 +387,8 @@ def main() -> None:
     print(f"- logs: {cfg.paths.logs_dir}")
     print(f"- submission table: {submission_csv}")
     print(f"- figures: {cfg.paths.figures_dir}")
+    if anim_path is not None:
+        print(f"- planning animation: {anim_path}")
     print(f"- checkpoints: {cfg.paths.checkpoints_dir}")
 
 
