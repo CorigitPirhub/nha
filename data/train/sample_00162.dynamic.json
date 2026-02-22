@@ -1,0 +1,18 @@
+{
+  "dynamic_count": 1,
+  "dynamic_modes": [
+    "linear"
+  ],
+  "dynamic_radii_m": [
+    1.0
+  ],
+  "dynamic_speed_mps": [
+    0.7896073460578918
+  ],
+  "dynamic_active": [
+    [
+      1,
+      24
+    ]
+  ]
+}

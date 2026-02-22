@@ -1,0 +1,29 @@
+{
+  "name": "hard_dynamic_targeted_dataset_v2",
+  "num_samples": 840,
+  "hard_ratio": 1.0,
+  "dynamic_task_ratio": 0.3488095238095238,
+  "maze_deadend_dynamic_ratio": 0.3488095238095238,
+  "difficulty_histogram": {
+    "hard": 840
+  },
+  "task_histogram": {
+    "deadend_reverse": 547,
+    "dynamic_avoid": 293
+  },
+  "template_histogram": {
+    "deadend_labyrinth": 434,
+    "maze_single": 406
+  },
+  "obstacle_distribution_histogram": {
+    "along_path": 276,
+    "cluster": 289,
+    "random": 275
+  },
+  "sources": [
+    "data_hd_v2_shard_a/train",
+    "data_hd_v2_shard_b/train",
+    "data_hd_v2_shard_c/train",
+    "data_hd_v2_shard_d/train"
+  ]
+}

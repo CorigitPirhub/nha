@@ -1,0 +1,39 @@
+{
+  "dynamic_count": 4,
+  "dynamic_modes": [
+    "random_walk",
+    "linear",
+    "random_walk",
+    "random_walk"
+  ],
+  "dynamic_radii_m": [
+    1.0,
+    1.5,
+    1.0,
+    0.5
+  ],
+  "dynamic_speed_mps": [
+    1.4186369180679321,
+    1.4562047719955444,
+    1.0077351331710815,
+    1.6975862979888916
+  ],
+  "dynamic_active": [
+    [
+      3,
+      22
+    ],
+    [
+      2,
+      13
+    ],
+    [
+      4,
+      17
+    ],
+    [
+      6,
+      13
+    ]
+  ]
+}

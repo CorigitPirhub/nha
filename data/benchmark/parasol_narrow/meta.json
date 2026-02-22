@@ -1,0 +1,33 @@
+{
+  "name": "parasol_narrow_converted",
+  "seed": 7,
+  "source": "synthetic_classic_proxies",
+  "raw_root": "",
+  "resolution": 0.5,
+  "map_size": 72,
+  "splits": {
+    "train": {
+      "num_samples": 60,
+      "scenario_histogram": {
+        "alpha_puzzle": 13,
+        "bug_trap": 26,
+        "flange": 21
+      },
+      "difficulty_histogram": {
+        "medium": 60
+      },
+      "num_maps": 6
+    },
+    "test": {
+      "num_samples": 30,
+      "scenario_histogram": {
+        "alpha_puzzle": 20,
+        "flange": 10
+      },
+      "difficulty_histogram": {
+        "medium": 30
+      },
+      "num_maps": 3
+    }
+  }
+}

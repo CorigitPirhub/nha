@@ -114,6 +114,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use-context-channels", action="store_true", default=True)
     p.add_argument("--disable-temporal-context", action="store_true")
     p.add_argument("--temporal-lambda", type=float, default=0.1)
+    p.add_argument(
+        "--hard-rank-lambda",
+        type=float,
+        default=0.0,
+        help="Search-aware ranking loss weight on hard samples (pairwise high-vs-low residual ordering).",
+    )
+    p.add_argument(
+        "--hard-rank-topk",
+        type=int,
+        default=64,
+        help="Top/Bottom-K cells used by hard ranking consistency loss.",
+    )
+    p.add_argument(
+        "--hard-rank-margin",
+        type=float,
+        default=0.01,
+        help="Margin used by hard ranking hinge loss (normalized residual units).",
+    )
     p.add_argument("--model-name", type=str, default="smallunet", choices=["tinyunet", "smallunet"])
     p.add_argument("--model-base", type=int, default=64)
 
@@ -275,6 +293,9 @@ def _eval_loss(
     hard_over_weight: float,
     narrow_over_weight: float,
     temporal_lambda: float,
+    hard_rank_lambda: float,
+    hard_rank_topk: int,
+    hard_rank_margin: float,
 ) -> float:
     model.eval()
     total = 0.0
@@ -312,6 +333,9 @@ def _eval_loss(
                 temporal_steps=t_steps,
                 yaw_bins=yaw_bins,
                 temporal_lambda=temporal_lambda,
+                hard_rank_lambda=hard_rank_lambda,
+                hard_rank_topk=hard_rank_topk,
+                hard_rank_margin=hard_rank_margin,
             )
             total += float(loss.item())
             n += 1
@@ -1144,6 +1168,9 @@ def main() -> None:
     cfg.train.hard_underestimation_weight = float(args.hard_under_weight)  # type: ignore[attr-defined]
     cfg.train.hard_overestimation_weight = float(args.hard_over_weight)  # type: ignore[attr-defined]
     cfg.train.narrow_overestimation_weight = float(args.narrow_over_weight)  # type: ignore[attr-defined]
+    cfg.train.hard_rank_lambda = float(args.hard_rank_lambda)  # type: ignore[attr-defined]
+    cfg.train.hard_rank_topk = int(args.hard_rank_topk)  # type: ignore[attr-defined]
+    cfg.train.hard_rank_margin = float(args.hard_rank_margin)  # type: ignore[attr-defined]
     cfg.train.distance_weight_scale_m = float(args.dist_weight_scale)
     cfg.train.distance_weight_min = float(args.dist_weight_min)
     cfg.train.type_c_loss_weight = float(args.type_c_weight)
@@ -1287,6 +1314,9 @@ def main() -> None:
                     temporal_steps=t_steps,
                     yaw_bins=y_bins,
                     temporal_lambda=float(args.temporal_lambda),
+                    hard_rank_lambda=float(args.hard_rank_lambda),
+                    hard_rank_topk=int(args.hard_rank_topk),
+                    hard_rank_margin=float(args.hard_rank_margin),
                 )
 
             scaler.scale(loss).backward()
@@ -1308,6 +1338,9 @@ def main() -> None:
             hard_over_weight=float(args.hard_over_weight),
             narrow_over_weight=float(args.narrow_over_weight),
             temporal_lambda=float(args.temporal_lambda),
+            hard_rank_lambda=float(args.hard_rank_lambda),
+            hard_rank_topk=int(args.hard_rank_topk),
+            hard_rank_margin=float(args.hard_rank_margin),
         )
         scheduler.step(val_loss)
         current_lr = float(optimizer.param_groups[0]["lr"])

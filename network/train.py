@@ -29,6 +29,9 @@ def _masked_loss(
     temporal_steps: int = 1,
     yaw_bins: int | None = None,
     temporal_lambda: float = 0.1,
+    hard_rank_lambda: float = 0.0,
+    hard_rank_topk: int = 64,
+    hard_rank_margin: float = 0.01,
 ) -> torch.Tensor:
     err = pred - target
     sq = err**2
@@ -63,23 +66,50 @@ def _masked_loss(
         oden_n = ow_n.sum().clamp_min(1.0)
         base_loss = base_loss + float(narrow_overestimation_weight) * ((torch.relu(err) * ow_n).sum() / oden_n)
 
+    total_loss = base_loss
+
     yb = int(yaw_bins) if yaw_bins is not None else int(pred.shape[1])
     t_steps = int(max(temporal_steps, 1))
-    if float(temporal_lambda) <= 0.0 or t_steps <= 1 or yb <= 0:
-        return base_loss
-    if pred.shape[1] != t_steps * yb:
-        return base_loss
+    if float(temporal_lambda) > 0.0 and t_steps > 1 and yb > 0 and pred.shape[1] == t_steps * yb:
+        bsz, _, h, w2 = pred.shape
+        pred_t = pred.view(bsz, t_steps, yb, h, w2)
+        mask_t = mask.view(bsz, t_steps, yb, h, w2)
+        temporal_mask = (mask_t[:, 1:] * mask_t[:, :-1]).to(pred.dtype)
+        if sample_weight is not None:
+            temporal_mask = temporal_mask * sample_weight.to(pred.dtype).view(-1, 1, 1, 1, 1)
+        temporal_diff = torch.abs(pred_t[:, 1:] - pred_t[:, :-1])
+        temporal_denom = temporal_mask.sum().clamp_min(1.0)
+        temporal_loss = (temporal_diff * temporal_mask).sum() / temporal_denom
+        total_loss = total_loss + float(temporal_lambda) * temporal_loss
 
-    bsz, _, h, w2 = pred.shape
-    pred_t = pred.view(bsz, t_steps, yb, h, w2)
-    mask_t = mask.view(bsz, t_steps, yb, h, w2)
-    temporal_mask = (mask_t[:, 1:] * mask_t[:, :-1]).to(pred.dtype)
-    if sample_weight is not None:
-        temporal_mask = temporal_mask * sample_weight.to(pred.dtype).view(-1, 1, 1, 1, 1)
-    temporal_diff = torch.abs(pred_t[:, 1:] - pred_t[:, :-1])
-    temporal_denom = temporal_mask.sum().clamp_min(1.0)
-    temporal_loss = (temporal_diff * temporal_mask).sum() / temporal_denom
-    return base_loss + float(temporal_lambda) * temporal_loss
+    # Search-aware ranking consistency for hard scenes:
+    # enforce that states with larger teacher residual keep larger predicted residual.
+    if float(hard_rank_lambda) > 0.0 and hard_mask is not None:
+        margin = float(max(hard_rank_margin, 0.0))
+        rank_terms: list[torch.Tensor] = []
+        hard_ids = (hard_mask.to(pred.dtype).view(-1) > 0.5).nonzero(as_tuple=False).view(-1)
+        for b in hard_ids:
+            valid = (mask[b] > 0.5)
+            n_valid = int(valid.sum().item())
+            if n_valid < 8:
+                continue
+            t = target[b][valid]
+            p = pred[b][valid]
+            if t.numel() < 8:
+                continue
+            k = int(min(max(int(hard_rank_topk), 2), int(t.numel() // 2)))
+            if k < 2:
+                continue
+            hi = torch.topk(t, k=k, largest=True).indices
+            lo = torch.topk(t, k=k, largest=False).indices
+            p_hi = p[hi].unsqueeze(1)
+            p_lo = p[lo].unsqueeze(0)
+            rank_terms.append(torch.relu(margin - (p_hi - p_lo)).mean())
+        if rank_terms:
+            rank_loss = torch.stack(rank_terms).mean()
+            total_loss = total_loss + float(hard_rank_lambda) * rank_loss
+
+    return total_loss
 
 
 def _eval(
@@ -90,6 +120,9 @@ def _eval(
     hard_underestimation_weight: float | None = None,
     hard_overestimation_weight: float = 0.0,
     narrow_overestimation_weight: float = 0.0,
+    hard_rank_lambda: float = 0.0,
+    hard_rank_topk: int = 64,
+    hard_rank_margin: float = 0.01,
 ) -> float:
     model.eval()
     total = 0.0
@@ -127,6 +160,9 @@ def _eval(
                 temporal_steps=t_steps,
                 yaw_bins=yaw_bins,
                 temporal_lambda=0.1,
+                hard_rank_lambda=hard_rank_lambda,
+                hard_rank_topk=hard_rank_topk,
+                hard_rank_margin=hard_rank_margin,
             )
             total += float(loss.item())
             count += 1
@@ -235,6 +271,9 @@ def train_network(
     hard_under_w = float(getattr(cfg.train, "hard_underestimation_weight", cfg.train.underestimation_weight))
     hard_over_w = float(getattr(cfg.train, "hard_overestimation_weight", 0.0))
     narrow_over_w = float(getattr(cfg.train, "narrow_overestimation_weight", 0.0))
+    hard_rank_lambda = float(getattr(cfg.train, "hard_rank_lambda", 0.0))
+    hard_rank_topk = int(getattr(cfg.train, "hard_rank_topk", 64))
+    hard_rank_margin = float(getattr(cfg.train, "hard_rank_margin", 0.01))
 
     for epoch in range(cfg.train.epochs):
         model.train()
@@ -276,6 +315,9 @@ def train_network(
                     temporal_steps=t_steps,
                     yaw_bins=yaw_bins,
                     temporal_lambda=0.1,
+                    hard_rank_lambda=hard_rank_lambda,
+                    hard_rank_topk=hard_rank_topk,
+                    hard_rank_margin=hard_rank_margin,
                 )
 
             scaler.scale(loss).backward()
@@ -296,6 +338,9 @@ def train_network(
             hard_underestimation_weight=hard_under_w,
             hard_overestimation_weight=hard_over_w,
             narrow_overestimation_weight=narrow_over_w,
+            hard_rank_lambda=hard_rank_lambda,
+            hard_rank_topk=hard_rank_topk,
+            hard_rank_margin=hard_rank_margin,
         )
         history["lr"].append(float(optimizer.param_groups[0]["lr"]))
         history["train_loss"].append(train_loss)

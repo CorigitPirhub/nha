@@ -1,0 +1,25 @@
+{
+  "dynamic_count": 2,
+  "dynamic_modes": [
+    "turning",
+    "turning"
+  ],
+  "dynamic_radii_m": [
+    0.5,
+    1.0
+  ],
+  "dynamic_speed_mps": [
+    1.5268769264221191,
+    0.5561056733131409
+  ],
+  "dynamic_active": [
+    [
+      5,
+      19
+    ],
+    [
+      4,
+      15
+    ]
+  ]
+}

@@ -91,6 +91,12 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Suppression strength in [0,1] for corridor residual gating.",
     )
+    p.add_argument(
+        "--residual-topq-quantile",
+        type=float,
+        default=0.0,
+        help="When >0, keep only residual values above this free-space quantile (top-q sparsification).",
+    )
     p.add_argument("--esdf-anchor-alpha", type=float, default=0.15)
     p.add_argument("--esdf-anchor-threshold", type=float, default=1.3)
     p.add_argument("--max-public-cases", type=int, default=40)
@@ -1064,6 +1070,7 @@ def _apply_residual_calibration(
     residual_bias_quantile: float,
     corridor_threshold: float,
     corridor_suppress: float,
+    topq_quantile: float,
 ) -> np.ndarray:
     out = pred_res_3d.astype(np.float32, copy=True)
     free = ~occupancy.astype(bool)
@@ -1084,6 +1091,14 @@ def _apply_residual_calibration(
         scale = 1.0 - sup * corridor
         out = (out * scale[None, ...]).astype(np.float32)
 
+    q_keep = float(np.clip(topq_quantile, 0.0, 0.999))
+    if q_keep > 0.0 and np.any(free):
+        vals = out[:, free].reshape(-1)
+        if vals.size > 0:
+            thr_keep = float(np.quantile(vals, q_keep))
+            if np.isfinite(thr_keep) and thr_keep > 0.0:
+                out = np.where(out >= thr_keep, out, 0.0).astype(np.float32)
+
     out[:, occupancy.astype(bool)] = 0.0
     return out
 
@@ -1096,6 +1111,7 @@ def _make_ours_anchor(
     residual_bias_quantile: float,
     residual_corridor_threshold: float,
     residual_corridor_suppress: float,
+    residual_topq_quantile: float,
     disable_temporal: bool,
     rs_base_override: np.ndarray | None = None,
 ) -> Callable[[float, float, float], float]:
@@ -1127,6 +1143,7 @@ def _make_ours_anchor(
         residual_bias_quantile=residual_bias_quantile,
         corridor_threshold=residual_corridor_threshold,
         corridor_suppress=residual_corridor_suppress,
+        topq_quantile=residual_topq_quantile,
     )
 
     return ResidualYawFieldHeuristic(
@@ -1216,6 +1233,7 @@ def _run_nonholonomic_experiment(
             args.residual_bias_quantile,
             args.residual_corridor_threshold,
             args.residual_corridor_suppress,
+            args.residual_topq_quantile,
             disable_temporal=False,
             rs_base_override=rs_field,
         )
@@ -1284,6 +1302,7 @@ def _run_nonholonomic_experiment(
             args.residual_bias_quantile,
             args.residual_corridor_threshold,
             args.residual_corridor_suppress,
+            args.residual_topq_quantile,
             disable_temporal=True,
             rs_base_override=rs_field,
         )
@@ -1344,6 +1363,7 @@ def _run_public_nonholonomic_experiment(
             args.residual_bias_quantile,
             args.residual_corridor_threshold,
             args.residual_corridor_suppress,
+            args.residual_topq_quantile,
             disable_temporal=False,
             rs_base_override=rs_field,
         )
@@ -1647,6 +1667,7 @@ def main() -> None:
         "residual_bias_quantile": args.residual_bias_quantile,
         "residual_corridor_threshold": args.residual_corridor_threshold,
         "residual_corridor_suppress": args.residual_corridor_suppress,
+        "residual_topq_quantile": args.residual_topq_quantile,
         "esdf_anchor_alpha": args.esdf_anchor_alpha,
         "esdf_anchor_threshold": args.esdf_anchor_threshold,
         "case_splits": {

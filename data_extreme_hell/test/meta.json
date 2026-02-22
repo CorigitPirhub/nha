@@ -1,9 +1,0 @@
-{
-  "num_samples": 20,
-  "seed": 20260219,
-  "corridor_width_cells": 6,
-  "corridor_width_m": 3.0,
-  "vehicle_width_m": 2.0,
-  "category": "C",
-  "scenario": "extreme_hell"
-}
