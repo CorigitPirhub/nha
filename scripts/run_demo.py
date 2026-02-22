@@ -312,13 +312,14 @@ def main() -> None:
     print("\n[4/5] Saving qualitative search-tree visualization...")
     if best["payload"] is not None:
         p = best["payload"]
+        pres = float(p.get("resolution", cfg.map.resolution))
         save_search_tree_comparison(
             occupancy=p["occupancy"],
             euclidean_expanded=p["euclidean_expanded"],
             ours_expanded=p["ours_expanded"],
             euclidean_path=p["euclidean_path"],
             ours_path=p["ours_path"],
-            resolution=cfg.map.resolution,
+            resolution=pres,
             start=tuple(float(v) for v in p["start"]),
             goal=tuple(float(v) for v in p["goal"]),
             out_path=cfg.paths.figures_dir / "search_tree_type_c_compare.png",
@@ -330,7 +331,7 @@ def main() -> None:
             pred_3d=p.get("pred_field"),
             goal=tuple(float(v) for v in p["goal"]),
             yaw_ref=float(p["start"][2]),
-            resolution=cfg.map.resolution,
+            resolution=pres,
             out_path=cfg.paths.figures_dir / "nonholonomic_field_compare.png",
             title=f"Type-C Heuristic Field ({p['scenario']})",
         )
@@ -342,7 +343,7 @@ def main() -> None:
                 ours_expanded=p["ours_expanded"],
                 euclidean_path=p["euclidean_path"],
                 ours_path=p["ours_path"],
-                resolution=cfg.map.resolution,
+                resolution=pres,
                 start=tuple(float(v) for v in p["start"]),
                 goal=tuple(float(v) for v in p["goal"]),
                 out_path=anim_out,

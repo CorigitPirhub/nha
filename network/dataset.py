@@ -26,6 +26,8 @@ class HeuristicFieldDataset(Dataset):
         hybrid_obstacle_threshold_m: float = 1.5,
         prediction_mode: str = "absolute",
         type_c_loss_weight: float = 1.0,
+        use_context_channels: bool = False,
+        use_temporal_context: bool = True,
     ) -> None:
         self.root = Path(root)
         self.files = sorted(self.root.glob("*.npz"))
@@ -38,6 +40,8 @@ class HeuristicFieldDataset(Dataset):
         self.hybrid_obstacle_alpha = float(max(hybrid_obstacle_alpha, 0.0))
         self.hybrid_obstacle_threshold_m = float(max(hybrid_obstacle_threshold_m, 1e-3))
         self.type_c_loss_weight = float(max(type_c_loss_weight, 1.0))
+        self.use_context_channels = bool(use_context_channels)
+        self.use_temporal_context = bool(use_temporal_context)
         self.prediction_mode = str(prediction_mode).lower()
         if self.prediction_mode not in {"absolute", "residual"}:
             raise ValueError(f"Unsupported prediction_mode: {prediction_mode}")
@@ -57,6 +61,16 @@ class HeuristicFieldDataset(Dataset):
         self.meta_rs_backend = str(self.meta.get("teacher_rs_backend", "auto"))
         self.meta_rs_step_size = float(self.meta.get("teacher_rs_step_size", 1.0))
         self._fallback_rs_cost_cfg = RSConsistentCostConfig.from_configs(DEFAULT_CONFIG.vehicle, DEFAULT_CONFIG.planner)
+        self._wb_min = 1.5
+        self._wb_max = 2.5
+        self._steer_min = 30.0
+        self._steer_max = 60.0
+
+    @staticmethod
+    def _norm_range(v: float, lo: float, hi: float) -> float:
+        if hi <= lo:
+            return 0.0
+        return float(np.clip((v - lo) / (hi - lo), 0.0, 1.0))
 
     def __len__(self) -> int:
         return len(self.files)
@@ -110,6 +124,14 @@ class HeuristicFieldDataset(Dataset):
             resolution = float(sample["resolution"])
             fill_value = float(sample["fill_value"])
             category = str(sample["category"]) if "category" in sample else "U"
+            difficulty = str(sample["difficulty"]) if "difficulty" in sample else ("hard" if category == "C" else "unknown")
+            dynamic_risk = sample["dynamic_risk"].astype(np.float32) if "dynamic_risk" in sample else np.zeros_like(occ)
+            dynamic_risk_seq = sample["dynamic_risk_seq"].astype(np.float32) if "dynamic_risk_seq" in sample else None
+            vehicle_wheel_base = float(sample["vehicle_wheel_base"]) if "vehicle_wheel_base" in sample else float(DEFAULT_CONFIG.vehicle.wheel_base)
+            vehicle_width = float(sample["vehicle_width"]) if "vehicle_width" in sample else float(DEFAULT_CONFIG.vehicle.width)
+            vehicle_max_steer_deg = float(sample["vehicle_max_steer_deg"]) if "vehicle_max_steer_deg" in sample else float(DEFAULT_CONFIG.vehicle.max_steer_deg)
+            vehicle_battery = float(sample["vehicle_battery"]) if "vehicle_battery" in sample else 100.0
+            vehicle_load_factor = float(sample["vehicle_load_factor"]) if "vehicle_load_factor" in sample else 1.0
 
             if "teacher_3d" in sample:
                 teacher = sample["teacher_3d"].astype(np.float32)
@@ -123,6 +145,10 @@ class HeuristicFieldDataset(Dataset):
             rs_base = None
             if self.prediction_mode == "residual":
                 rs_base = self._derive_rs_base(sample, teacher, occ, esdf, goal, resolution, fill_value)
+
+            temporal_residual = None
+            if self.prediction_mode == "residual" and "temporal_residual_3d" in sample:
+                temporal_residual = sample["temporal_residual_3d"].astype(np.float32)
 
         if self.hybrid_obstacle_alpha > 0.0:
             obs_cost = np.maximum(0.0, self.hybrid_obstacle_threshold_m - np.maximum(esdf, 0.0)).astype(np.float32)
@@ -139,12 +165,53 @@ class HeuristicFieldDataset(Dataset):
         goal_cos = np.full((h, w), np.cos(goal[2]), dtype=np.float32)
 
         x = np.stack([occ, esdf_norm, goal_map, goal_sin, goal_cos], axis=0).astype(np.float32)
+        if self.use_context_channels:
+            dyn = np.clip(dynamic_risk.astype(np.float32), 0.0, 1.0)
+            if self.use_temporal_context and dynamic_risk_seq is not None and dynamic_risk_seq.ndim == 3 and dynamic_risk_seq.shape[0] >= 3:
+                dyn_t1 = np.clip(dynamic_risk_seq[1], 0.0, 1.0).astype(np.float32)
+                dyn_t2 = np.clip(dynamic_risk_seq[2], 0.0, 1.0).astype(np.float32)
+            else:
+                dyn_t1 = dyn
+                dyn_t2 = dyn
+            wb_norm = self._norm_range(vehicle_wheel_base, self._wb_min, self._wb_max)
+            steer_norm = self._norm_range(vehicle_max_steer_deg, self._steer_min, self._steer_max)
+            batt_norm = self._norm_range(vehicle_battery, 20.0, 100.0)
+            load_norm = self._norm_range(vehicle_load_factor, 1.0, 1.5)
+            x = np.concatenate(
+                [
+                    x,
+                    dyn[None, ...],
+                    dyn_t1[None, ...],
+                    dyn_t2[None, ...],
+                    np.full((1, h, w), wb_norm, dtype=np.float32),
+                    np.full((1, h, w), steer_norm, dtype=np.float32),
+                    np.full((1, h, w), batt_norm, dtype=np.float32),
+                    np.full((1, h, w), load_norm, dtype=np.float32),
+                ],
+                axis=0,
+            ).astype(np.float32)
 
         scale = np.hypot(h * resolution, w * resolution)
+        temporal_steps = 1
+        yaw_bins = int(teacher.shape[0])
         if self.prediction_mode == "residual":
             if rs_base is None:
                 raise RuntimeError("Residual mode requires RS base field.")
-            target_raw = (teacher - rs_base).astype(np.float32)
+            if self.use_temporal_context and temporal_residual is not None and temporal_residual.ndim == 4:
+                temporal_steps = int(temporal_residual.shape[0])
+                yaw_bins = int(temporal_residual.shape[1])
+                temp = temporal_residual.reshape(temporal_steps * yaw_bins, h, w).astype(np.float32)
+                temp = np.where(np.isfinite(temp), temp, 0.0).astype(np.float32)
+                temp = np.maximum(temp, 0.0).astype(np.float32)
+                pos = temp[temp > 0.0]
+                if pos.size > 0:
+                    clip_hi = float(np.percentile(pos, 99.0))
+                else:
+                    clip_hi = float(2.0 * np.hypot(h * resolution, w * resolution))
+                clip_hi = float(np.clip(clip_hi, 1.0, 4.0 * np.hypot(h * resolution, w * resolution)))
+                target_raw = np.clip(temp, 0.0, clip_hi).astype(np.float32)
+            else:
+                target_raw = (teacher - rs_base).astype(np.float32)
         else:
             target_raw = teacher.astype(np.float32)
         target = (target_raw / max(scale, 1e-3)).astype(np.float32)
@@ -158,6 +225,10 @@ class HeuristicFieldDataset(Dataset):
         dist_w = 1.0 / (1.0 + np.maximum(teacher_2d, 0.0) / self.distance_weight_scale_m)
         dist_w = np.clip(dist_w, self.distance_weight_min, 1.0).astype(np.float32)
         loss_weight = np.broadcast_to(dist_w[None, ...], target.shape).astype(np.float32)
+        narrow_thr = float(max(0.35, 0.95 * vehicle_width))
+        narrow_mask_2d = ((occ < 0.5) & (esdf <= narrow_thr)).astype(np.float32)
+        narrow_mask = np.broadcast_to(narrow_mask_2d[None, ...], target.shape).astype(np.float32)
+        is_hard = 1.0 if difficulty == "hard" else 0.0
 
         return {
             "input": torch.from_numpy(x),
@@ -165,6 +236,10 @@ class HeuristicFieldDataset(Dataset):
             "mask": torch.from_numpy(mask),
             "loss_weight": torch.from_numpy(loss_weight),
             "sample_weight": torch.tensor(self.type_c_loss_weight if category == "C" else 1.0, dtype=torch.float32),
+            "is_hard": torch.tensor(is_hard, dtype=torch.float32),
+            "narrow_mask": torch.from_numpy(narrow_mask),
             "scale": torch.tensor(scale, dtype=torch.float32),
             "resolution": torch.tensor(resolution, dtype=torch.float32),
+            "temporal_steps": torch.tensor(int(temporal_steps), dtype=torch.int64),
+            "yaw_bins": torch.tensor(int(yaw_bins), dtype=torch.int64),
         }

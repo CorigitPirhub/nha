@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -36,6 +36,8 @@ class CaseMetrics:
     case_id: int
     scenario: str
     category: str
+    difficulty: str
+    task_type: str
     euclidean_success: bool
     euclidean_expansions: int
     euclidean_time_ms: float
@@ -86,17 +88,17 @@ def _run_method(
     )
 
 
-def _build_guidance_fn(pred_field: np.ndarray, cfg: ExperimentConfig, occupancy: np.ndarray):
+def _build_guidance_fn(pred_field: np.ndarray, cfg: ExperimentConfig, occupancy: np.ndarray, resolution: float):
     if pred_field.ndim == 2:
         free_vals = pred_field[~occupancy]
         clip_max = float(np.percentile(free_vals, 98)) if free_vals.size > 0 else cfg.dataset.max_teacher_value
         clip_max = float(np.clip(clip_max, 1.0, cfg.dataset.max_teacher_value))
-        return FieldHeuristic(pred_field, cfg.map.resolution, max_value=clip_max, scale=1.0)
+        return FieldHeuristic(pred_field, resolution, max_value=clip_max, scale=1.0)
 
     free_vals = pred_field[:, ~occupancy]
     clip_max = float(np.percentile(free_vals, 98)) if free_vals.size > 0 else cfg.dataset.max_teacher_value
     clip_max = float(np.clip(clip_max, 1.0, cfg.dataset.max_teacher_value))
-    return YawFieldHeuristic(pred_field, cfg.map.resolution, max_value=clip_max, scale=1.0)
+    return YawFieldHeuristic(pred_field, resolution, max_value=clip_max, scale=1.0)
 
 
 def _make_clipped_anchor(raw_fn, eu_fn, clip_factor: float):
@@ -119,7 +121,7 @@ def _adaptive_neural_clip_factor(occupancy: np.ndarray) -> float:
 
 
 def _summarize_rows(rows: list[CaseMetrics], timing_rows: list[dict] | None = None) -> dict:
-    out: dict = {"num_cases": len(rows), "methods": {}, "by_category": {}}
+    out: dict = {"num_cases": len(rows), "methods": {}, "by_category": {}, "by_difficulty": {}}
     methods = ["euclidean", "dubins", "rs_consistent", "ours"]
 
     for m in methods:
@@ -150,6 +152,21 @@ def _summarize_rows(rows: list[CaseMetrics], timing_rows: list[dict] | None = No
             succ_rows = [r for r in cat_rows if getattr(r, f"{m}_success")]
             out["by_category"][cat][m] = {
                 "success_rate": len(succ_rows) / max(len(cat_rows), 1),
+                "avg_expansions": _safe_mean([float(getattr(r, f"{m}_expansions")) for r in succ_rows]),
+                "avg_time_ms": _safe_mean([float(getattr(r, f"{m}_time_ms")) for r in succ_rows]),
+                "avg_cost": _safe_mean([float(getattr(r, f"{m}_cost")) for r in succ_rows if np.isfinite(getattr(r, f"{m}_cost"))]),
+            }
+
+    all_diffs = sorted({str(r.difficulty) for r in rows if str(r.difficulty)})
+    for diff in all_diffs:
+        diff_rows = [r for r in rows if str(r.difficulty) == diff]
+        if not diff_rows:
+            continue
+        out["by_difficulty"][diff] = {}
+        for m in methods:
+            succ_rows = [r for r in diff_rows if getattr(r, f"{m}_success")]
+            out["by_difficulty"][diff][m] = {
+                "success_rate": len(succ_rows) / max(len(diff_rows), 1),
                 "avg_expansions": _safe_mean([float(getattr(r, f"{m}_expansions")) for r in succ_rows]),
                 "avg_time_ms": _safe_mean([float(getattr(r, f"{m}_time_ms")) for r in succ_rows]),
                 "avg_cost": _safe_mean([float(getattr(r, f"{m}_cost")) for r in succ_rows if np.isfinite(getattr(r, f"{m}_cost"))]),
@@ -214,10 +231,14 @@ def evaluate_benchmark(
     categories: set[str] | None = None,
     use_rs_cache: bool = False,
     rs_cache_dir: Path | None = None,
+    max_cases: int | None = None,
 ) -> tuple[dict, list[CaseMetrics], dict]:
     files = sorted(test_dir.glob("*.npz"))
     if not files:
         raise RuntimeError(f"No test files found in {test_dir}")
+    if max_cases is not None and int(max_cases) > 0 and len(files) > int(max_cases):
+        idx = np.linspace(0, len(files) - 1, int(max_cases), dtype=np.int32)
+        files = [files[int(i)] for i in np.unique(idx)]
 
     out_dir.mkdir(parents=True, exist_ok=True)
     rows: list[CaseMetrics] = []
@@ -239,27 +260,62 @@ def evaluate_benchmark(
 
     for p in files:
         with np.load(p, allow_pickle=False) as data:
+            resolution = float(data["resolution"]) if "resolution" in data else float(cfg.map.resolution)
             occupancy = data["occupancy"].astype(bool)
+            if "occupancy_static" in data and "dynamic_risk" in data:
+                occ_static = data["occupancy_static"].astype(bool)
+                dyn_risk = np.clip(data["dynamic_risk"].astype(np.float32), 0.0, 1.0)
+                risk_thr = float(data["dynamic_block_threshold"]) if "dynamic_block_threshold" in data else 0.25
+                occupancy = np.logical_or(occ_static, dyn_risk >= risk_thr)
+            dynamic_risk = data["dynamic_risk"].astype(np.float32) if "dynamic_risk" in data else None
             esdf = data["esdf"].astype(np.float32)
             teacher_3d = data["teacher_3d"].astype(np.float32) if "teacher_3d" in data else None
             start = tuple(float(v) for v in data["start"].astype(np.float32))
             goal = tuple(float(v) for v in data["goal"].astype(np.float32))
             scenario = str(data["scenario"]) if "scenario" in data else "unknown"
             category = str(data["category"]) if "category" in data else "U"
+            difficulty = str(data["difficulty"]) if "difficulty" in data else category
+            task_type = str(data["task_type"]) if "task_type" in data else "unknown"
+            local_vehicle = replace(cfg.vehicle)
+            if "vehicle_wheel_base" in data:
+                local_vehicle.wheel_base = float(data["vehicle_wheel_base"])
+            if "vehicle_length" in data:
+                local_vehicle.length = float(data["vehicle_length"])
+            if "vehicle_width" in data:
+                local_vehicle.width = float(data["vehicle_width"])
+            if "vehicle_max_steer_deg" in data:
+                local_vehicle.max_steer_deg = float(data["vehicle_max_steer_deg"])
+            if "vehicle_min_turn_radius" in data:
+                local_vehicle.min_turn_radius = float(data["vehicle_min_turn_radius"])
+            local_planner = replace(cfg.planner)
+            if "planner_step_size" in data:
+                local_planner.step_size = float(data["planner_step_size"])
+            if "planner_reverse_penalty" in data:
+                local_planner.reverse_penalty = float(data["planner_reverse_penalty"])
+            if "planner_steer_penalty" in data:
+                local_planner.steer_penalty = float(data["planner_steer_penalty"])
+            if "planner_steer_change_penalty" in data:
+                local_planner.steer_change_penalty = float(data["planner_steer_change_penalty"])
+            vehicle_context = {
+                "wheel_base": float(getattr(local_vehicle, "wheel_base", cfg.vehicle.wheel_base)),
+                "max_steer_deg": float(getattr(local_vehicle, "max_steer_deg", cfg.vehicle.max_steer_deg)),
+                "battery": float(data["vehicle_battery"]) if "vehicle_battery" in data else 100.0,
+                "load_factor": float(data["vehicle_load_factor"]) if "vehicle_load_factor" in data else 1.0,
+            }
         if categories is not None and category not in categories:
             continue
         case_id = len(rows)
 
         planner = HybridAStarPlanner(
             occupancy=occupancy,
-            resolution=cfg.map.resolution,
-            vehicle_cfg=cfg.vehicle,
-            planner_cfg=cfg.planner,
+            resolution=resolution,
+            vehicle_cfg=local_vehicle,
+            planner_cfg=local_planner,
             esdf=esdf,
         )
 
         clip_factor_dubins = 2.0
-        rs_cost_cfg = RSConsistentCostConfig.from_configs(cfg.vehicle, cfg.planner)
+        rs_cost_cfg = RSConsistentCostConfig.from_configs(local_vehicle, local_planner)
 
         # Baseline 1: Euclidean anchor
         eu_anchor = euclidean_heuristic((goal[0], goal[1]))
@@ -274,15 +330,15 @@ def evaluate_benchmark(
         dubins_field = compute_dubins_field(
             occupancy=occupancy,
             goal=goal,
-            resolution=cfg.map.resolution,
+            resolution=resolution,
             yaw_bins=eval_yaw_bins,
-            rho=cfg.vehicle.min_turn_radius,
+            rho=local_vehicle.min_turn_radius,
             fill_value=cfg.dataset.max_teacher_value,
         )
         db_heur_ms = (time.perf_counter() - t_h) * 1000.0
         dubins_raw = YawFieldHeuristic(
             dubins_field,
-            cfg.map.resolution,
+            resolution,
             max_value=cfg.dataset.max_teacher_value,
             scale=1.0,
         )
@@ -298,9 +354,9 @@ def evaluate_benchmark(
             key = make_rs_field_cache_key(
                 occupancy=occupancy,
                 goal=goal,
-                resolution=cfg.map.resolution,
+                resolution=resolution,
                 yaw_bins=eval_yaw_bins,
-                rho=cfg.vehicle.min_turn_radius,
+                rho=local_vehicle.min_turn_radius,
                 step_size=cfg.dataset.teacher_rs_step_size,
                 backend=cfg.dataset.teacher_rs_backend,
                 cost_mode="planner_consistent",
@@ -314,9 +370,9 @@ def evaluate_benchmark(
                 rs_cons_field = compute_reeds_shepp_field(
                     occupancy=occupancy,
                     goal=goal,
-                    resolution=cfg.map.resolution,
+                    resolution=resolution,
                     yaw_bins=eval_yaw_bins,
-                    rho=cfg.vehicle.min_turn_radius,
+                    rho=local_vehicle.min_turn_radius,
                     fill_value=cfg.dataset.max_teacher_value,
                     step_size=cfg.dataset.teacher_rs_step_size,
                     backend=cfg.dataset.teacher_rs_backend,
@@ -329,9 +385,9 @@ def evaluate_benchmark(
             rs_cons_field = compute_reeds_shepp_field(
                 occupancy=occupancy,
                 goal=goal,
-                resolution=cfg.map.resolution,
+                resolution=resolution,
                 yaw_bins=eval_yaw_bins,
-                rho=cfg.vehicle.min_turn_radius,
+                rho=local_vehicle.min_turn_radius,
                 fill_value=cfg.dataset.max_teacher_value,
                 step_size=cfg.dataset.teacher_rs_step_size,
                 backend=cfg.dataset.teacher_rs_backend,
@@ -341,7 +397,7 @@ def evaluate_benchmark(
         rs_compute_ms = (time.perf_counter() - t_rs) * 1000.0
         rs_cons_anchor = YawFieldHeuristic(
             rs_cons_field,
-            cfg.map.resolution,
+            resolution,
             max_value=cfg.dataset.max_teacher_value,
             scale=1.0,
         )
@@ -353,14 +409,22 @@ def evaluate_benchmark(
         # Ours: residual-corrected anchor or absolute neural anchor.
         if predictor.prediction_mode == "residual":
             t_pred = time.perf_counter()
-            pred_residual = predictor.predict_residual_field(occupancy, esdf, start, goal, resolution=cfg.map.resolution)
+            pred_residual = predictor.predict_residual_field(
+                occupancy,
+                esdf,
+                start,
+                goal,
+                resolution=resolution,
+                dynamic_risk=dynamic_risk,
+                vehicle_context=vehicle_context,
+            )
             ours_heur_ms = (time.perf_counter() - t_pred) * 1000.0
             # Residual branch should only add environment-aware penalty, never weaken RS analytical prior.
             pred_residual = (np.maximum(pred_residual, 0.0) * residual_alpha).astype(np.float32)
             neural_raw = ResidualYawFieldHeuristic(
                 base_field_3d=rs_cons_field,
                 residual_field_3d=pred_residual,
-                resolution=cfg.map.resolution,
+                resolution=resolution,
                 max_value=cfg.dataset.max_teacher_value,
                 scale=1.0,
             )
@@ -370,10 +434,18 @@ def evaluate_benchmark(
             ours_rs_ms = rs_compute_ms
         else:
             t_pred = time.perf_counter()
-            pred_field = predictor.predict_field(occupancy, esdf, start, goal, resolution=cfg.map.resolution)
+            pred_field = predictor.predict_field(
+                occupancy,
+                esdf,
+                start,
+                goal,
+                resolution=resolution,
+                dynamic_risk=dynamic_risk,
+                vehicle_context=vehicle_context,
+            )
             ours_heur_ms = (time.perf_counter() - t_pred) * 1000.0
             ours_rs_ms = 0.0
-            neural_raw = _build_guidance_fn(pred_field, cfg, occupancy)
+            neural_raw = _build_guidance_fn(pred_field, cfg, occupancy, resolution=resolution)
             neural_anchor = _make_clipped_anchor(
                 neural_raw,
                 eu_anchor,
@@ -403,6 +475,8 @@ def evaluate_benchmark(
                 case_id=case_id,
                 scenario=scenario,
                 category=category,
+                difficulty=difficulty,
+                task_type=task_type,
                 euclidean_success=eu.success,
                 euclidean_expansions=eu.expansions,
                 euclidean_time_ms=eu.time_ms,
@@ -461,7 +535,11 @@ def evaluate_benchmark(
                         "goal": np.asarray(goal, dtype=np.float32),
                         "scenario": scenario,
                         "category": category,
+                        "difficulty": difficulty,
+                        "task_type": task_type,
+                        "resolution": float(resolution),
                         "esdf": esdf,
+                        "dynamic_risk": dynamic_risk,
                         "teacher_3d": teacher_3d,
                         "dubins_field": dubins_field,
                         "rs_cons_field": rs_cons_field,
@@ -482,6 +560,7 @@ def evaluate_benchmark(
         "categories": sorted(list(categories)) if categories is not None else ["A", "B", "C", "U"],
         "use_rs_cache": bool(use_rs_cache),
         "rs_cache_dir": str(rs_cache_dir) if rs_cache_dir is not None else None,
+        "max_cases": int(max_cases) if max_cases is not None else None,
     }
     if use_rs_cache:
         total = cache_hits + cache_misses

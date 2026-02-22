@@ -1,14 +1,44 @@
 {
-  "num_samples": 12,
-  "scenario_histogram": {
-    "random": 6,
-    "narrow": 4,
-    "parking": 2
+  "split": "test",
+  "num_samples": 220,
+  "template_histogram": {
+    "narrow_passage": 106,
+    "deadend_labyrinth": 35,
+    "city_street": 11,
+    "maze_single": 29,
+    "maze_multi": 35,
+    "dense_random": 2,
+    "warehouse": 2
   },
-  "resolution": 0.5,
-  "map_size": [
-    64,
-    64
-  ],
-  "fill_value": 1000000.0
+  "difficulty_histogram": {
+    "hard": 115,
+    "simple": 7,
+    "medium": 98
+  },
+  "task_histogram": {
+    "long_detour": 63,
+    "deadend_reverse": 31,
+    "multi_goal": 59,
+    "narrow_passage": 47,
+    "dynamic_avoid": 20
+  },
+  "obstacle_distribution_histogram": {
+    "along_path": 74,
+    "cluster": 75,
+    "random": 71
+  },
+  "teacher_mode": "dubins_proxy",
+  "teacher_yaw_bins": 1,
+  "teacher_rs_backend": "approx",
+  "teacher_rs_step_size": 1.0,
+  "hybrid_obstacle_alpha": 0.15,
+  "hybrid_obstacle_threshold_m": 1.6,
+  "dynamic_horizon": 24,
+  "dynamic_dt": 0.45,
+  "include_rs_base": false,
+  "map": {
+    "height": 48,
+    "width": 48,
+    "resolution": 0.5
+  }
 }
