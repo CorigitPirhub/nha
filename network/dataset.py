@@ -125,6 +125,8 @@ class HeuristicFieldDataset(Dataset):
             fill_value = float(sample["fill_value"])
             category = str(sample["category"]) if "category" in sample else "U"
             difficulty = str(sample["difficulty"]) if "difficulty" in sample else ("hard" if category == "C" else "unknown")
+            source_dataset = str(sample["source_dataset"]) if "source_dataset" in sample else ""
+            scenario_type = str(sample["scenario_type"]) if "scenario_type" in sample else ""
             dynamic_risk = sample["dynamic_risk"].astype(np.float32) if "dynamic_risk" in sample else np.zeros_like(occ)
             dynamic_risk_seq = sample["dynamic_risk_seq"].astype(np.float32) if "dynamic_risk_seq" in sample else None
             vehicle_wheel_base = float(sample["vehicle_wheel_base"]) if "vehicle_wheel_base" in sample else float(DEFAULT_CONFIG.vehicle.wheel_base)
@@ -228,7 +230,21 @@ class HeuristicFieldDataset(Dataset):
         narrow_thr = float(max(0.35, 0.95 * vehicle_width))
         narrow_mask_2d = ((occ < 0.5) & (esdf <= narrow_thr)).astype(np.float32)
         narrow_mask = np.broadcast_to(narrow_mask_2d[None, ...], target.shape).astype(np.float32)
-        is_hard = 1.0 if difficulty == "hard" else 0.0
+        st = scenario_type.strip().lower()
+        src = source_dataset.strip().lower()
+        if not st:
+            if src in {"mp", "csm"}:
+                st = "standard"
+            elif str(difficulty).strip().lower() == "hard":
+                st = "hard"
+            else:
+                st = "general"
+
+        is_standard = 1.0 if st == "standard" else 0.0
+        if is_standard > 0.5:
+            is_hard = 0.0
+        else:
+            is_hard = 1.0 if (st in {"hard", "nonholonomic", "hard_dynamic"} or str(difficulty).strip().lower() == "hard") else 0.0
 
         return {
             "input": torch.from_numpy(x),
@@ -237,6 +253,7 @@ class HeuristicFieldDataset(Dataset):
             "loss_weight": torch.from_numpy(loss_weight),
             "sample_weight": torch.tensor(self.type_c_loss_weight if category == "C" else 1.0, dtype=torch.float32),
             "is_hard": torch.tensor(is_hard, dtype=torch.float32),
+            "is_standard": torch.tensor(is_standard, dtype=torch.float32),
             "narrow_mask": torch.from_numpy(narrow_mask),
             "scale": torch.tensor(scale, dtype=torch.float32),
             "resolution": torch.tensor(resolution, dtype=torch.float32),

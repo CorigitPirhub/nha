@@ -100,6 +100,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--esdf-anchor-alpha", type=float, default=0.15)
     p.add_argument("--esdf-anchor-threshold", type=float, default=1.3)
     p.add_argument("--max-public-cases", type=int, default=40)
+    p.add_argument(
+        "--standard-base-mode",
+        type=str,
+        default="euclidean",
+        choices=["euclidean", "rs"],
+        help="Base heuristic used for Ours in Exp1 when checkpoint is in residual mode.",
+    )
 
     return p.parse_args()
 
@@ -542,6 +549,21 @@ def _resolve_2d_heuristic(pred: np.ndarray, occupancy: np.ndarray) -> np.ndarray
     return h2d
 
 
+def _euclidean_field(
+    occupancy: np.ndarray,
+    goal_xy: tuple[float, float],
+    resolution: float,
+    fill_value: float = 1e6,
+) -> np.ndarray:
+    h, w = occupancy.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    wx = (xx + 0.5) * float(resolution)
+    wy = (yy + 0.5) * float(resolution)
+    field = np.hypot(wx - float(goal_xy[0]), wy - float(goal_xy[1])).astype(np.float32)
+    field[occupancy] = float(fill_value)
+    return field
+
+
 def _method_summary(rows: list[EvalRow]) -> dict[tuple[str, str, str], dict]:
     grouped: dict[tuple[str, str, str], list[EvalRow]] = defaultdict(list)
     for r in rows:
@@ -878,12 +900,21 @@ def _run_standard_experiment(
         rows.append(EvalRow("exp1_standard", ds, "Neural A*", p.name, r_na["success"], float(r_na["expansions"]), _path_length(r_na["path"]), float(r_na["runtime_ms"] + infer_ms)))
 
         t0 = time.perf_counter()
+        base_override = None
+        if ours_predictor.prediction_mode == "residual" and str(args.standard_base_mode).lower() == "euclidean":
+            base_override = _euclidean_field(
+                occupancy=s.occupancy,
+                goal_xy=(s.goal[0], s.goal[1]),
+                resolution=s.resolution,
+                fill_value=1e6,
+            )
         pred = ours_predictor.predict_field(
             occupancy=s.occupancy,
             esdf=np.zeros_like(s.occupancy, dtype=np.float32),
             start=s.start,
             goal=s.goal,
             resolution=s.resolution,
+            base_field_override=base_override,
         )
         infer_ms = (time.perf_counter() - t0) * 1000.0
         h_ours = _resolve_2d_heuristic(pred, s.occupancy)

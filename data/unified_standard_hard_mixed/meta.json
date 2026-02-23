@@ -1,0 +1,137 @@
+{
+  "seed": 7,
+  "output_root": "data/unified_standard_hard_mixed",
+  "benchmark_root": "data/benchmark",
+  "hard_root": "data_hard_dynamic_yaw8m48",
+  "out_size": 64,
+  "yaw_bins": 8,
+  "hard_ratio_target": 0.6,
+  "teacher_mode": "reeds_shepp_consistent",
+  "teacher_rs_backend": "auto",
+  "teacher_rs_step_size": 1.0,
+  "include_rs_base": true,
+  "splits": {
+    "train": {
+      "num_samples": 1033,
+      "hard_samples": 620,
+      "standard_samples": 413,
+      "hard_ratio": 0.6001936108422071,
+      "standard_ratio": 0.3998063891577928,
+      "dynamic_avoid_ratio": 0.0968054211035818
+    },
+    "val": {
+      "num_samples": 233,
+      "hard_samples": 140,
+      "standard_samples": 93,
+      "hard_ratio": 0.6008583690987125,
+      "standard_ratio": 0.39914163090128757,
+      "dynamic_avoid_ratio": 0.1072961373390558
+    },
+    "test": {
+      "num_samples": 367,
+      "hard_samples": 220,
+      "standard_samples": 147,
+      "hard_ratio": 0.5994550408719346,
+      "standard_ratio": 0.40054495912806537,
+      "dynamic_avoid_ratio": 0.07084468664850137
+    }
+  },
+  "selected_counts": {
+    "train": {
+      "hard": 620,
+      "standard": 413
+    },
+    "val": {
+      "hard": 140,
+      "standard": 93
+    },
+    "test": {
+      "hard": 220,
+      "standard": 147
+    }
+  },
+  "config_snapshot": {
+    "seed": 7,
+    "vehicle": {
+      "wheel_base": 2.7,
+      "length": 4.5,
+      "width": 2.0,
+      "max_steer_deg": 35.0,
+      "min_turn_radius": 4.0
+    },
+    "map": {
+      "width": 64,
+      "height": 64,
+      "resolution": 0.5,
+      "obstacle_density_range": [
+        0.04,
+        0.14
+      ]
+    },
+    "planner": {
+      "step_size": 0.6,
+      "collision_check_step": 0.15,
+      "yaw_bins": 72,
+      "goal_tolerance_xy": 1.0,
+      "goal_tolerance_yaw_deg": 40.0,
+      "max_expansions": 120000,
+      "reverse_penalty": 1.2,
+      "steer_penalty": 0.05,
+      "steer_change_penalty": 0.05,
+      "residual_alpha": 1.1,
+      "guidance_blend": 0.7,
+      "warm_start_budget": 0
+    },
+    "dataset": {
+      "train_size": 120,
+      "val_size": 24,
+      "test_size": 20,
+      "gaussian_sigma": 2.5,
+      "min_start_goal_dist_m": 8.0,
+      "max_teacher_value": 1000000.0,
+      "teacher_yaw_bins": 24,
+      "teacher_mode": "hybrid_rs_consistent_esdf",
+      "teacher_rs_backend": "auto",
+      "teacher_rs_step_size": 1.0,
+      "hybrid_obstacle_alpha": 0.0,
+      "hybrid_obstacle_threshold_m": 1.5,
+      "benchmark_train_counts": [
+        40,
+        40,
+        40
+      ],
+      "benchmark_val_counts": [
+        8,
+        8,
+        8
+      ],
+      "benchmark_test_counts": [
+        12,
+        12,
+        12
+      ]
+    },
+    "train": {
+      "batch_size": 8,
+      "epochs": 20,
+      "learning_rate": 0.001,
+      "weight_decay": 1e-05,
+      "num_workers": 0,
+      "device": "cuda",
+      "cosine_eta_min_ratio": 0.1,
+      "underestimation_weight": 2.0,
+      "distance_weight_scale_m": 6.0,
+      "distance_weight_min": 0.25,
+      "type_c_loss_weight": 1.0,
+      "prediction_mode": "absolute"
+    },
+    "paths": {
+      "root": ".",
+      "data_dir": "data",
+      "output_dir": "outputs",
+      "checkpoints_dir": "outputs/checkpoints",
+      "figures_dir": "outputs/figures",
+      "logs_dir": "outputs/logs"
+    }
+  }
+}

@@ -143,6 +143,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval-test-cases", type=int, default=80)
     p.add_argument("--final-train-cases", type=int, default=200)
     p.add_argument("--final-test-cases", type=int, default=220)
+    p.add_argument(
+        "--skip-epoch-planning-eval",
+        action="store_true",
+        help="Skip per-epoch Hybrid A* planning evaluation and select model by validation loss.",
+    )
+    p.add_argument(
+        "--skip-final-planning-eval",
+        action="store_true",
+        help="Skip final train/test/baseline planning evaluation in this run.",
+    )
     p.add_argument("--residual-alpha", type=float, default=1.5)
     p.add_argument(
         "--residual-clip-m",
@@ -264,6 +274,7 @@ def _build_model_and_loaders(args: argparse.Namespace, cfg):
         shuffle=True,
         num_workers=cfg.train.num_workers,
         pin_memory=(cfg.train.device.startswith("cuda")),
+        drop_last=True,
     )
     val_loader = DataLoader(
         val_ds,
@@ -312,6 +323,9 @@ def _eval_loss(
             hm = batch.get("is_hard")
             if hm is not None:
                 hm = hm.to(device, non_blocking=True)
+            sm = batch.get("is_standard")
+            if sm is not None:
+                sm = sm.to(device, non_blocking=True)
             nm = batch.get("narrow_mask")
             if nm is not None:
                 nm = nm.to(device, non_blocking=True)
@@ -326,6 +340,7 @@ def _eval_loss(
                 sw,
                 underestimation_weight=under_weight,
                 hard_mask=hm,
+                standard_mask=sm,
                 hard_underestimation_weight=hard_under_weight,
                 hard_overestimation_weight=hard_over_weight,
                 narrow_mask=nm,
@@ -1271,7 +1286,10 @@ def main() -> None:
     epoch_rows: list[dict] = []
 
     best_epoch = -1
-    best_score = (-1.0, -1.0, -1.0, float("inf"))
+    if bool(args.skip_epoch_planning_eval):
+        best_score: tuple[float, ...] = (-float("inf"),)
+    else:
+        best_score = (-1.0, -1.0, -1.0, float("inf"))
     best_ckpt = _best_ckpt_path(cfg.paths.checkpoints_dir, args.run_tag)
 
     print("[3/5] Training with per-epoch hard+dynamic evaluation...")
@@ -1290,6 +1308,9 @@ def main() -> None:
             hm = batch.get("is_hard")
             if hm is not None:
                 hm = hm.to(device, non_blocking=True)
+            sm = batch.get("is_standard")
+            if sm is not None:
+                sm = sm.to(device, non_blocking=True)
             nm = batch.get("narrow_mask")
             if nm is not None:
                 nm = nm.to(device, non_blocking=True)
@@ -1307,6 +1328,7 @@ def main() -> None:
                     sw,
                     underestimation_weight=cfg.train.underestimation_weight,
                     hard_mask=hm,
+                    standard_mask=sm,
                     hard_underestimation_weight=float(args.hard_under_weight),
                     hard_overestimation_weight=float(args.hard_over_weight),
                     narrow_mask=nm,
@@ -1360,40 +1382,46 @@ def main() -> None:
             heuristic_yaw_bins=heuristic_yaw_bins,
         )
 
-        predictor = NeuralHeuristicPredictor(ckpt_path, device=cfg.train.device, gaussian_sigma=cfg.dataset.gaussian_sigma)
-        train_summary = _evaluate_split(
-            cfg,
-            cfg.paths.data_dir / "train",
-            predictor,
-            cfg.paths.logs_dir,
-            tag=f"{args.run_tag}_train_epoch_{epoch:03d}",
-            max_cases=int(args.eval_train_cases),
-            residual_alpha=float(args.residual_alpha),
-            residual_clip_m=float(args.residual_clip_m),
-            use_euclidean_fallback=(not bool(args.disable_euclidean_fallback)),
-            hard_max_expansions=int(args.hard_max_expansions),
-            maze_max_expansions=int(args.maze_max_expansions),
-            narrow_max_expansions=int(args.narrow_max_expansions),
-        )
-        test_summary = _evaluate_split(
-            cfg,
-            cfg.paths.data_dir / "test",
-            predictor,
-            cfg.paths.logs_dir,
-            tag=f"{args.run_tag}_test_epoch_{epoch:03d}",
-            max_cases=int(args.eval_test_cases),
-            residual_alpha=float(args.residual_alpha),
-            residual_clip_m=float(args.residual_clip_m),
-            use_euclidean_fallback=(not bool(args.disable_euclidean_fallback)),
-            hard_max_expansions=int(args.hard_max_expansions),
-            maze_max_expansions=int(args.maze_max_expansions),
-            narrow_max_expansions=int(args.narrow_max_expansions),
-        )
+        if bool(args.skip_epoch_planning_eval):
+            train_m = {"success_rate": float("nan"), "avg_expansions": float("nan"), "avg_cost": float("nan")}
+            test_m = {"success_rate": float("nan"), "avg_expansions": float("nan"), "avg_cost": float("nan")}
+            test_hard = float("nan")
+            test_dyn = float("nan")
+        else:
+            predictor = NeuralHeuristicPredictor(ckpt_path, device=cfg.train.device, gaussian_sigma=cfg.dataset.gaussian_sigma)
+            train_summary = _evaluate_split(
+                cfg,
+                cfg.paths.data_dir / "train",
+                predictor,
+                cfg.paths.logs_dir,
+                tag=f"{args.run_tag}_train_epoch_{epoch:03d}",
+                max_cases=int(args.eval_train_cases),
+                residual_alpha=float(args.residual_alpha),
+                residual_clip_m=float(args.residual_clip_m),
+                use_euclidean_fallback=(not bool(args.disable_euclidean_fallback)),
+                hard_max_expansions=int(args.hard_max_expansions),
+                maze_max_expansions=int(args.maze_max_expansions),
+                narrow_max_expansions=int(args.narrow_max_expansions),
+            )
+            test_summary = _evaluate_split(
+                cfg,
+                cfg.paths.data_dir / "test",
+                predictor,
+                cfg.paths.logs_dir,
+                tag=f"{args.run_tag}_test_epoch_{epoch:03d}",
+                max_cases=int(args.eval_test_cases),
+                residual_alpha=float(args.residual_alpha),
+                residual_clip_m=float(args.residual_clip_m),
+                use_euclidean_fallback=(not bool(args.disable_euclidean_fallback)),
+                hard_max_expansions=int(args.hard_max_expansions),
+                maze_max_expansions=int(args.maze_max_expansions),
+                narrow_max_expansions=int(args.narrow_max_expansions),
+            )
 
-        train_m = _ours_metrics(train_summary)
-        test_m = _ours_metrics(test_summary)
-        test_hard = _safe_group_success(test_summary, "by_difficulty", "hard")
-        test_dyn = _safe_group_success(test_summary, "by_task", "dynamic_avoid")
+            train_m = _ours_metrics(train_summary)
+            test_m = _ours_metrics(test_summary)
+            test_hard = _safe_group_success(test_summary, "by_difficulty", "hard")
+            test_dyn = _safe_group_success(test_summary, "by_task", "dynamic_avoid")
 
         history["train_loss"].append(float(train_loss))
         history["val_loss"].append(float(val_loss))
@@ -1421,12 +1449,15 @@ def main() -> None:
         }
         epoch_rows.append(row)
 
-        score = (
-            float(test_m["success_rate"]),
-            float(test_hard) if np.isfinite(test_hard) else -1.0,
-            float(test_dyn) if np.isfinite(test_dyn) else -1.0,
-            -float(test_m["avg_expansions"]) if np.isfinite(test_m["avg_expansions"]) else -1e9,
-        )
+        if bool(args.skip_epoch_planning_eval):
+            score = (-float(val_loss),)
+        else:
+            score = (
+                float(test_m["success_rate"]),
+                float(test_hard) if np.isfinite(test_hard) else -1.0,
+                float(test_dyn) if np.isfinite(test_dyn) else -1.0,
+                -float(test_m["avg_expansions"]) if np.isfinite(test_m["avg_expansions"]) else -1e9,
+            )
         if score > best_score:
             best_score = score
             best_epoch = int(epoch)
@@ -1451,55 +1482,59 @@ def main() -> None:
         )
 
     print("[4/5] Final evaluation (optimized + baseline)...")
-    final_predictor = NeuralHeuristicPredictor(best_ckpt, device=cfg.train.device, gaussian_sigma=cfg.dataset.gaussian_sigma)
-    final_train_summary = _evaluate_split(
-        cfg,
-        cfg.paths.data_dir / "train",
-        final_predictor,
-        cfg.paths.logs_dir,
-        tag=f"{args.run_tag}_final_train",
-        max_cases=int(args.final_train_cases),
-        residual_alpha=float(args.residual_alpha),
-        residual_clip_m=float(args.residual_clip_m),
-        use_euclidean_fallback=(not bool(args.disable_euclidean_fallback)),
-        hard_max_expansions=int(args.hard_max_expansions),
-        maze_max_expansions=int(args.maze_max_expansions),
-        narrow_max_expansions=int(args.narrow_max_expansions),
-    )
-    final_test_summary = _evaluate_split(
-        cfg,
-        cfg.paths.data_dir / "test",
-        final_predictor,
-        cfg.paths.logs_dir,
-        tag=f"{args.run_tag}_final_test",
-        max_cases=int(args.final_test_cases),
-        residual_alpha=float(args.residual_alpha),
-        residual_clip_m=float(args.residual_clip_m),
-        use_euclidean_fallback=(not bool(args.disable_euclidean_fallback)),
-        hard_max_expansions=int(args.hard_max_expansions),
-        maze_max_expansions=int(args.maze_max_expansions),
-        narrow_max_expansions=int(args.narrow_max_expansions),
-    )
-
     baseline_summary = None
-    if args.baseline_checkpoint.exists():
-        baseline_predictor = NeuralHeuristicPredictor(args.baseline_checkpoint, device=cfg.train.device, gaussian_sigma=cfg.dataset.gaussian_sigma)
-        baseline_summary = _evaluate_split(
+    baseline_predictor = None
+    if bool(args.skip_final_planning_eval):
+        final_predictor = NeuralHeuristicPredictor(best_ckpt, device=cfg.train.device, gaussian_sigma=cfg.dataset.gaussian_sigma)
+        final_train_summary = {"num_cases": 0, "methods": {"ours": {}}, "by_difficulty": {}, "by_task": {}}
+        final_test_summary = {"num_cases": 0, "methods": {"ours": {}}, "by_difficulty": {}, "by_task": {}}
+    else:
+        final_predictor = NeuralHeuristicPredictor(best_ckpt, device=cfg.train.device, gaussian_sigma=cfg.dataset.gaussian_sigma)
+        final_train_summary = _evaluate_split(
             cfg,
-            cfg.paths.data_dir / "test",
-            baseline_predictor,
+            cfg.paths.data_dir / "train",
+            final_predictor,
             cfg.paths.logs_dir,
-            tag=f"{args.run_tag}_baseline_test",
-            max_cases=int(args.final_test_cases),
+            tag=f"{args.run_tag}_final_train",
+            max_cases=int(args.final_train_cases),
             residual_alpha=float(args.residual_alpha),
             residual_clip_m=float(args.residual_clip_m),
-            use_euclidean_fallback=False,
+            use_euclidean_fallback=(not bool(args.disable_euclidean_fallback)),
             hard_max_expansions=int(args.hard_max_expansions),
             maze_max_expansions=int(args.maze_max_expansions),
             narrow_max_expansions=int(args.narrow_max_expansions),
         )
-    else:
-        baseline_predictor = None
+        final_test_summary = _evaluate_split(
+            cfg,
+            cfg.paths.data_dir / "test",
+            final_predictor,
+            cfg.paths.logs_dir,
+            tag=f"{args.run_tag}_final_test",
+            max_cases=int(args.final_test_cases),
+            residual_alpha=float(args.residual_alpha),
+            residual_clip_m=float(args.residual_clip_m),
+            use_euclidean_fallback=(not bool(args.disable_euclidean_fallback)),
+            hard_max_expansions=int(args.hard_max_expansions),
+            maze_max_expansions=int(args.maze_max_expansions),
+            narrow_max_expansions=int(args.narrow_max_expansions),
+        )
+
+        if args.baseline_checkpoint.exists():
+            baseline_predictor = NeuralHeuristicPredictor(args.baseline_checkpoint, device=cfg.train.device, gaussian_sigma=cfg.dataset.gaussian_sigma)
+            baseline_summary = _evaluate_split(
+                cfg,
+                cfg.paths.data_dir / "test",
+                baseline_predictor,
+                cfg.paths.logs_dir,
+                tag=f"{args.run_tag}_baseline_test",
+                max_cases=int(args.final_test_cases),
+                residual_alpha=float(args.residual_alpha),
+                residual_clip_m=float(args.residual_clip_m),
+                use_euclidean_fallback=False,
+                hard_max_expansions=int(args.hard_max_expansions),
+                maze_max_expansions=int(args.maze_max_expansions),
+                narrow_max_expansions=int(args.narrow_max_expansions),
+            )
 
     args_json = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
     history_path = cfg.paths.logs_dir / f"{args.run_tag}_history.json"

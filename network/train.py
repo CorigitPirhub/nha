@@ -22,6 +22,7 @@ def _masked_loss(
     sample_weight: torch.Tensor | None,
     underestimation_weight: float,
     hard_mask: torch.Tensor | None = None,
+    standard_mask: torch.Tensor | None = None,
     hard_underestimation_weight: float | None = None,
     hard_overestimation_weight: float = 0.0,
     narrow_mask: torch.Tensor | None = None,
@@ -41,7 +42,12 @@ def _masked_loss(
         hm = hard_mask.to(pred.dtype).view(-1, 1, 1, 1)
         hw = float(max(hard_underestimation_weight, 1e-3))
         under_weight = under_weight * (1.0 - hm) + hw * hm
-    asym = sq * (1.0 + (under_weight - 1.0) * under)
+    asym_scale = 1.0 + (under_weight - 1.0) * under
+    if standard_mask is not None:
+        sm = standard_mask.to(pred.dtype).view(-1, 1, 1, 1)
+        # Standard benchmark samples use symmetric MSE only.
+        asym_scale = asym_scale * (1.0 - sm) + sm
+    asym = sq * asym_scale
     w = mask * loss_weight
     if sample_weight is not None:
         w = w * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
@@ -63,6 +69,8 @@ def _masked_loss(
         if nm.shape[1] == 1 and pred.shape[1] != 1:
             nm = nm.expand(-1, pred.shape[1], -1, -1)
         ow_n = w * nm
+        if standard_mask is not None:
+            ow_n = ow_n * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
         oden_n = ow_n.sum().clamp_min(1.0)
         base_loss = base_loss + float(narrow_overestimation_weight) * ((torch.relu(err) * ow_n).sum() / oden_n)
 
@@ -75,6 +83,8 @@ def _masked_loss(
         pred_t = pred.view(bsz, t_steps, yb, h, w2)
         mask_t = mask.view(bsz, t_steps, yb, h, w2)
         temporal_mask = (mask_t[:, 1:] * mask_t[:, :-1]).to(pred.dtype)
+        if standard_mask is not None:
+            temporal_mask = temporal_mask * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1, 1))
         if sample_weight is not None:
             temporal_mask = temporal_mask * sample_weight.to(pred.dtype).view(-1, 1, 1, 1, 1)
         temporal_diff = torch.abs(pred_t[:, 1:] - pred_t[:, :-1])
@@ -139,6 +149,9 @@ def _eval(
             hm = batch.get("is_hard")
             if hm is not None:
                 hm = hm.to(device, non_blocking=True)
+            sm = batch.get("is_standard")
+            if sm is not None:
+                sm = sm.to(device, non_blocking=True)
             nm = batch.get("narrow_mask")
             if nm is not None:
                 nm = nm.to(device, non_blocking=True)
@@ -153,6 +166,7 @@ def _eval(
                 sw,
                 underestimation_weight=underestimation_weight,
                 hard_mask=hm,
+                standard_mask=sm,
                 hard_underestimation_weight=hard_underestimation_weight,
                 hard_overestimation_weight=hard_overestimation_weight,
                 narrow_mask=nm,
@@ -291,6 +305,9 @@ def train_network(
             hm = batch.get("is_hard")
             if hm is not None:
                 hm = hm.to(device, non_blocking=True)
+            sm = batch.get("is_standard")
+            if sm is not None:
+                sm = sm.to(device, non_blocking=True)
             nm = batch.get("narrow_mask")
             if nm is not None:
                 nm = nm.to(device, non_blocking=True)
@@ -308,6 +325,7 @@ def train_network(
                     sw,
                     underestimation_weight=cfg.train.underestimation_weight,
                     hard_mask=hm,
+                    standard_mask=sm,
                     hard_underestimation_weight=hard_under_w,
                     hard_overestimation_weight=hard_over_w,
                     narrow_mask=nm,
