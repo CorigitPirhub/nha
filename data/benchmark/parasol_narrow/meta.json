@@ -1,33 +1,46 @@
 {
   "name": "parasol_narrow_converted",
   "seed": 7,
-  "source": "synthetic_classic_proxies",
-  "raw_root": "",
   "resolution": 0.5,
-  "map_size": 72,
+  "map_size": 96,
+  "conversion": {
+    "source": "open_ppl_env_query_tasks",
+    "open_ppl_root": "data/benchmark/.external/open-ppl-env",
+    "num_specs": 18,
+    "num_written": 18,
+    "num_dropped": 0,
+    "train_count": 0,
+    "test_count": 18,
+    "scene_filter": [
+      "alpha",
+      "bug_trap",
+      "flange"
+    ],
+    "include_all_open_scenes": true,
+    "include_flange_variants": true,
+    "train_ratio": 0.0
+  },
   "splits": {
     "train": {
-      "num_samples": 60,
-      "scenario_histogram": {
-        "alpha_puzzle": 13,
-        "bug_trap": 26,
-        "flange": 21
-      },
-      "difficulty_histogram": {
-        "medium": 60
-      },
-      "num_maps": 6
+      "num_samples": 0,
+      "scenario_histogram": {},
+      "difficulty_histogram": {},
+      "num_maps": 0
     },
     "test": {
-      "num_samples": 30,
+      "num_samples": 18,
       "scenario_histogram": {
-        "alpha_puzzle": 20,
-        "flange": 10
+        "alpha_puzzle": 1,
+        "bug_trap": 1,
+        "flange": 5,
+        "maze": 1,
+        "narrow_passage": 4,
+        "parasol_misc": 6
       },
       "difficulty_histogram": {
-        "medium": 30
+        "medium": 18
       },
-      "num_maps": 3
+      "num_maps": 17
     }
   }
 }

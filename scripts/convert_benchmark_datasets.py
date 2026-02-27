@@ -384,13 +384,18 @@ def _convert_csm_from_maps(cfg: ConvertConfig, planning_repo: Path) -> dict:
         for mp in map_list:
             base = mp.stem
             gray = _load_grayscale(mp)
-            for _ in range(int(n_per_map)):
+            produced = 0
+            attempts = 0
+            max_attempts = int(max(200, n_per_map * 300))
+
+            while produced < int(n_per_map) and attempts < max_attempts:
+                attempts += 1
                 crop = _crop_and_resize(gray, crop_size=cfg.csm_crop_size, out_size=64, rng=rng)
                 occ = _gray_to_occupancy(crop)
 
-                # sample valid goal/start from connected free-space
+                # Sample valid goal/start from connected free-space.
                 ok = False
-                for _attempt in range(40):
+                for _attempt in range(80):
                     free = np.argwhere(~occ)
                     if free.size == 0:
                         break
@@ -424,6 +429,12 @@ def _convert_csm_from_maps(cfg: ConvertConfig, planning_repo: Path) -> dict:
                     map_id=base,
                 )
                 idx += 1
+                produced += 1
+
+            if produced < int(n_per_map):
+                raise RuntimeError(
+                    f"CSM map {base} generated {produced}/{int(n_per_map)} samples after {attempts} attempts"
+                )
         return idx
 
     train_end = gen_split(train_maps, cfg.csm_train_per_map, train_dir, 0)

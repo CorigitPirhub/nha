@@ -72,32 +72,32 @@
         "num_maps_total": 30,
         "num_maps_train": 20,
         "num_maps_test": 10,
-        "train_count": 739,
-        "test_count": 355,
+        "train_count": 800,
+        "test_count": 400,
         "source": "movingai_street_png"
       },
       "splits": {
         "train": {
-          "num_samples": 739,
+          "num_samples": 800,
           "scenario_histogram": {
-            "csm_city_street": 739
+            "csm_city_street": 800
           },
           "difficulty_histogram": {
-            "hard": 452,
-            "medium": 197,
-            "simple": 90
+            "hard": 499,
+            "medium": 213,
+            "simple": 88
           },
           "num_maps": 20
         },
         "test": {
-          "num_samples": 355,
+          "num_samples": 400,
           "scenario_histogram": {
-            "csm_city_street": 355
+            "csm_city_street": 400
           },
           "difficulty_histogram": {
-            "hard": 219,
-            "medium": 93,
-            "simple": 43
+            "hard": 272,
+            "medium": 83,
+            "simple": 45
           },
           "num_maps": 10
         }
