@@ -183,6 +183,117 @@ class SmallUNet(nn.Module):
         return self._apply_output_activation(x)
 
 
+class CostPropagationRefiner(nn.Module):
+    def __init__(self, channels: int, steps: int = 4) -> None:
+        super().__init__()
+        self.channels = int(max(channels, 1))
+        self.steps = int(max(steps, 1))
+        self.depthwise = nn.Conv2d(
+            self.channels,
+            self.channels,
+            kernel_size=3,
+            padding=1,
+            groups=self.channels,
+            bias=False,
+        )
+        with torch.no_grad():
+            # 8-neighborhood averaging kernel (center excluded).
+            k = torch.tensor(
+                [
+                    [1.0 / 8.0, 1.0 / 8.0, 1.0 / 8.0],
+                    [1.0 / 8.0, 0.0, 1.0 / 8.0],
+                    [1.0 / 8.0, 1.0 / 8.0, 1.0 / 8.0],
+                ],
+                dtype=torch.float32,
+            )
+            w = k.view(1, 1, 3, 3).repeat(self.channels, 1, 1, 1)
+            self.depthwise.weight.copy_(w)
+
+        self.state_gate = nn.Sequential(
+            nn.Conv2d(self.channels + 2, self.channels, kernel_size=1, bias=True),
+            nn.Sigmoid(),
+        )
+        self.step_logits = nn.Parameter(torch.full((self.steps, self.channels, 1, 1), -1.2))
+
+    def forward(self, y: torch.Tensor, occ: torch.Tensor, esdf_norm: torch.Tensor) -> torch.Tensor:
+        if y.ndim != 4:
+            return y
+        free = (occ < 0.5).to(y.dtype)
+        z = y
+        for i in range(self.steps):
+            nbr = self.depthwise(z)
+            gate = self.state_gate(torch.cat([z, occ, esdf_norm], dim=1))
+            step = torch.sigmoid(self.step_logits[i]).to(y.dtype)
+            # In cluttered low-clearance regions keep updates conservative.
+            clearance_scale = 0.4 + 0.6 * esdf_norm
+            update = (nbr - z) * gate * clearance_scale
+            z = z + step * update * free
+        return z
+
+
+class SmallUNetPropagation(nn.Module):
+    def __init__(
+        self,
+        in_channels: int = 10,
+        out_channels: int = 24,
+        base: int = 64,
+        output_activation: OutputActivation = "softplus",
+        propagation_steps: int = 4,
+    ) -> None:
+        super().__init__()
+        self.inc = ConvBlock(in_channels, base, use_se=True)
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), ConvBlock(base, base * 2, use_se=True))
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), ConvBlock(base * 2, base * 4, use_se=True))
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), ConvBlock(base * 4, base * 8, use_se=True))
+        self.context_dilated = ConvBlock(base * 8, base * 8, use_se=True, dilation=2)
+        self.context_ppm = PyramidPooling(base * 8, base * 8, bins=(1, 2, 4))
+
+        self.up1_conv = ConvBlock(base * 8 + base * 4, base * 4, use_se=True)
+        self.up2_conv = ConvBlock(base * 4 + base * 2, base * 2, use_se=True)
+        self.up3_conv = ConvBlock(base * 2 + base, base, use_se=True)
+        self.out = nn.Conv2d(base, out_channels, kernel_size=1)
+        self.refiner = CostPropagationRefiner(channels=out_channels, steps=propagation_steps)
+
+        act = str(output_activation).lower()
+        if act not in {"softplus", "identity"}:
+            raise ValueError(f"Unsupported output_activation: {output_activation}")
+        self.output_activation = cast(OutputActivation, act)
+        self.softplus = nn.Softplus(beta=1.0)
+
+    def _apply_output_activation(self, x: torch.Tensor) -> torch.Tensor:
+        if self.output_activation == "softplus":
+            return self.softplus(x)
+        if self.output_activation == "identity":
+            return x
+        raise ValueError(f"Unsupported output_activation: {self.output_activation}")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x4 = self.context_dilated(x4)
+        x4 = self.context_ppm(x4)
+
+        y = F.interpolate(x4, size=x3.shape[-2:], mode="bilinear", align_corners=False)
+        y = torch.cat([y, x3], dim=1)
+        y = self.up1_conv(y)
+
+        y = F.interpolate(y, size=x2.shape[-2:], mode="bilinear", align_corners=False)
+        y = torch.cat([y, x2], dim=1)
+        y = self.up2_conv(y)
+
+        y = F.interpolate(y, size=x1.shape[-2:], mode="bilinear", align_corners=False)
+        y = torch.cat([y, x1], dim=1)
+        y = self.up3_conv(y)
+
+        y = self.out(y)
+        occ = x[:, 0:1]
+        esdf_norm = x[:, 1:2] if x.shape[1] >= 2 else torch.ones_like(occ)
+        y = self.refiner(y, occ=occ, esdf_norm=esdf_norm)
+        return self._apply_output_activation(y)
+
+
 class SmallUNetLegacy(nn.Module):
     def __init__(
         self,
@@ -258,6 +369,14 @@ def build_model(
             out_channels=out_channels,
             base=base,
             output_activation=cast(OutputActivation, str(output_activation).lower()),
+        )
+    if name in {"smallunet_prop", "small_unet_prop", "smallunet_propagation", "small_propagation"}:
+        return SmallUNetPropagation(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            base=base,
+            output_activation=cast(OutputActivation, str(output_activation).lower()),
+            propagation_steps=4,
         )
     if name in {"smallunet_legacy", "small_unet_legacy", "small_legacy", "smallunet_v1"}:
         return SmallUNetLegacy(

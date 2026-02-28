@@ -115,6 +115,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--disable-temporal-context", action="store_true")
     p.add_argument("--temporal-lambda", type=float, default=0.1)
     p.add_argument(
+        "--gradient-struct-lambda",
+        type=float,
+        default=0.0,
+        help="Weight for gradient-field structural consistency loss.",
+    )
+    p.add_argument(
+        "--laplacian-struct-lambda",
+        type=float,
+        default=0.0,
+        help="Weight for Laplacian propagation-shape consistency loss.",
+    )
+    p.add_argument(
         "--hard-rank-lambda",
         type=float,
         default=0.0,
@@ -132,7 +144,12 @@ def parse_args() -> argparse.Namespace:
         default=0.01,
         help="Margin used by hard ranking hinge loss (normalized residual units).",
     )
-    p.add_argument("--model-name", type=str, default="smallunet", choices=["tinyunet", "smallunet"])
+    p.add_argument(
+        "--model-name",
+        type=str,
+        default="smallunet",
+        choices=["tinyunet", "smallunet", "smallunet_prop"],
+    )
     p.add_argument("--model-base", type=int, default=64)
 
     p.add_argument("--lr-plateau-factor", type=float, default=0.5)
@@ -307,6 +324,8 @@ def _eval_loss(
     hard_rank_lambda: float,
     hard_rank_topk: int,
     hard_rank_margin: float,
+    gradient_struct_lambda: float,
+    laplacian_struct_lambda: float,
 ) -> float:
     model.eval()
     total = 0.0
@@ -351,6 +370,8 @@ def _eval_loss(
                 hard_rank_lambda=hard_rank_lambda,
                 hard_rank_topk=hard_rank_topk,
                 hard_rank_margin=hard_rank_margin,
+                gradient_struct_lambda=gradient_struct_lambda,
+                laplacian_struct_lambda=laplacian_struct_lambda,
             )
             total += float(loss.item())
             n += 1
@@ -1339,6 +1360,8 @@ def main() -> None:
                     hard_rank_lambda=float(args.hard_rank_lambda),
                     hard_rank_topk=int(args.hard_rank_topk),
                     hard_rank_margin=float(args.hard_rank_margin),
+                    gradient_struct_lambda=float(args.gradient_struct_lambda),
+                    laplacian_struct_lambda=float(args.laplacian_struct_lambda),
                 )
 
             scaler.scale(loss).backward()
@@ -1363,6 +1386,8 @@ def main() -> None:
             hard_rank_lambda=float(args.hard_rank_lambda),
             hard_rank_topk=int(args.hard_rank_topk),
             hard_rank_margin=float(args.hard_rank_margin),
+            gradient_struct_lambda=float(args.gradient_struct_lambda),
+            laplacian_struct_lambda=float(args.laplacian_struct_lambda),
         )
         scheduler.step(val_loss)
         current_lr = float(optimizer.param_groups[0]["lr"])

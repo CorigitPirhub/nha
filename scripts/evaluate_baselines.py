@@ -26,7 +26,7 @@ from baselines.vin import VINLite, train_vin
 from config import DEFAULT_CONFIG
 from env.reeds_shepp import RSConsistentCostConfig, compute_reeds_shepp_field
 from network.inference import NeuralHeuristicPredictor
-from planner.heuristics import FieldHeuristic, ResidualYawFieldHeuristic, YawFieldHeuristic
+from planner.heuristics import FieldHeuristic, YawFieldHeuristic
 from planner.hybrid_astar import HybridAStarPlanner
 from utils.common import ensure_dirs, set_seed
 
@@ -143,6 +143,102 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="When >0, keep only residual values above this free-space quantile (top-q sparsification).",
     )
+    p.add_argument(
+        "--residual-contrastive-bg-quantile",
+        type=float,
+        default=0.0,
+        help="When >0, convert residual to contrastive signed correction by subtracting this free-space background quantile.",
+    )
+    p.add_argument(
+        "--residual-contrastive-neg-scale",
+        type=float,
+        default=0.0,
+        help="Scale for negative contrastive residual after background subtraction (0 disables negative branch).",
+    )
+    p.add_argument(
+        "--residual-contrastive-pos-scale",
+        type=float,
+        default=1.0,
+        help="Scale for positive contrastive residual after background subtraction.",
+    )
+    p.add_argument(
+        "--residual-floor-ratio",
+        type=float,
+        default=0.0,
+        help="Safety floor: fused heuristic >= residual_floor_ratio * RS base.",
+    )
+    p.add_argument(
+        "--residual-transport-iters",
+        type=int,
+        default=0,
+        help="Obstacle-aware residual transport iterations (0 disables).",
+    )
+    p.add_argument(
+        "--residual-transport-step",
+        type=float,
+        default=0.35,
+        help="Step size for each residual transport iteration.",
+    )
+    p.add_argument(
+        "--residual-transport-clearance-sigma",
+        type=float,
+        default=0.45,
+        help="Clearance similarity scale (meters) for obstacle-aware residual transport.",
+    )
+    p.add_argument(
+        "--residual-bottleneck-threshold",
+        type=float,
+        default=0.0,
+        help="Bottleneck ESDF threshold (meters) used for local residual transport blending.",
+    )
+    p.add_argument(
+        "--residual-bottleneck-blend",
+        type=float,
+        default=0.0,
+        help="Blend ratio in [0,1] for bottleneck transport residual branch.",
+    )
+    p.add_argument(
+        "--residual-bottleneck-gamma",
+        type=float,
+        default=1.0,
+        help="Power factor for bottleneck blending mask (higher => more concentrated in tight corridors).",
+    )
+    p.add_argument(
+        "--residual-open-boost",
+        type=float,
+        default=0.0,
+        help="Adaptive positive residual gain in open regions (0 disables).",
+    )
+    p.add_argument(
+        "--residual-open-boost-topq",
+        type=float,
+        default=0.0,
+        help="Apply open-region boost only to positive residual values above this free-space quantile (0 disables).",
+    )
+    p.add_argument(
+        "--residual-open-boost-min-line-clearance",
+        type=float,
+        default=0.0,
+        help="Disable open boost when mean ESDF along start-goal line is below this threshold (meters).",
+    )
+    p.add_argument(
+        "--residual-bottleneck-dampen",
+        type=float,
+        default=0.0,
+        help="Adaptive residual damping in bottlenecks to improve narrow-scene robustness.",
+    )
+    p.add_argument(
+        "--residual-adaptive-trust-ratio",
+        type=float,
+        default=0.0,
+        help="When >0, clamp adaptive residual deviation from CRC baseline by quantile ratio.",
+    )
+    p.add_argument(
+        "--residual-adaptive-trust-quantile",
+        type=float,
+        default=0.95,
+        help="Quantile used by adaptive trust-region clamp.",
+    )
     p.add_argument("--esdf-anchor-alpha", type=float, default=0.15)
     p.add_argument("--esdf-anchor-threshold", type=float, default=1.3)
     p.add_argument("--max-public-cases", type=int, default=40)
@@ -176,6 +272,29 @@ def _path_length(path_xy: list[tuple[float, float]]) -> float:
         dy = path_xy[i][1] - path_xy[i - 1][1]
         total += math.hypot(dx, dy)
     return float(total)
+
+
+def _mean_line_clearance(
+    esdf: np.ndarray,
+    start: tuple[float, float, float],
+    goal: tuple[float, float, float],
+    resolution: float,
+    samples_per_cell: float = 2.0,
+) -> float:
+    h, w = esdf.shape
+    sx = float(start[0] / resolution - 0.5)
+    sy = float(start[1] / resolution - 0.5)
+    gx = float(goal[0] / resolution - 0.5)
+    gy = float(goal[1] / resolution - 0.5)
+    n = int(max(2, np.hypot(gx - sx, gy - sy) * float(max(samples_per_cell, 1.0))))
+    xs = np.linspace(sx, gx, num=n, dtype=np.float32)
+    ys = np.linspace(sy, gy, num=n, dtype=np.float32)
+    xi = np.clip(np.floor(xs).astype(np.int64), 0, w - 1)
+    yi = np.clip(np.floor(ys).astype(np.int64), 0, h - 1)
+    vals = esdf[yi, xi].astype(np.float32)
+    if vals.size <= 0:
+        return float("inf")
+    return float(np.mean(vals))
 
 
 def _neighbors8() -> list[tuple[int, int, float]]:
@@ -1205,9 +1324,79 @@ def _match_yaw_channels(field: np.ndarray, yaw_bins: int) -> np.ndarray:
     if c == 1:
         return np.repeat(field, yaw_bins, axis=0).astype(np.float32)
 
-    # Nearest-neighbor resampling along yaw dimension.
-    idx = (np.floor(np.arange(yaw_bins, dtype=np.float32) * (c / float(yaw_bins))).astype(np.int64)) % c
-    return field[idx].astype(np.float32)
+    # Circular linear interpolation along yaw dimension for smoother channel alignment.
+    src = np.arange(c, dtype=np.float32)
+    dst = (np.arange(yaw_bins, dtype=np.float32) + 0.5) * (c / float(max(yaw_bins, 1))) - 0.5
+    i0 = np.floor(dst).astype(np.int64) % c
+    i1 = (i0 + 1) % c
+    w = (dst - np.floor(dst)).astype(np.float32)
+    out = ((1.0 - w)[:, None, None] * field[i0] + w[:, None, None] * field[i1]).astype(np.float32)
+    return out
+
+
+def _shift2d_no_wrap(arr: np.ndarray, dy: int, dx: int) -> np.ndarray:
+    out = np.roll(np.roll(arr, shift=dy, axis=0), shift=dx, axis=1)
+    if dy > 0:
+        out[:dy, :] = 0.0
+    elif dy < 0:
+        out[dy:, :] = 0.0
+    if dx > 0:
+        out[:, :dx] = 0.0
+    elif dx < 0:
+        out[:, dx:] = 0.0
+    return out
+
+
+def _shift3d_no_wrap(arr: np.ndarray, dy: int, dx: int) -> np.ndarray:
+    out = np.roll(np.roll(arr, shift=dy, axis=1), shift=dx, axis=2)
+    if dy > 0:
+        out[:, :dy, :] = 0.0
+    elif dy < 0:
+        out[:, dy:, :] = 0.0
+    if dx > 0:
+        out[:, :, :dx] = 0.0
+    elif dx < 0:
+        out[:, :, dx:] = 0.0
+    return out
+
+
+def _transport_residual_obstacle_aware(
+    residual_3d: np.ndarray,
+    occupancy: np.ndarray,
+    esdf: np.ndarray,
+    iters: int,
+    step: float,
+    clearance_sigma: float,
+) -> np.ndarray:
+    n_iters = int(max(iters, 0))
+    step_size = float(np.clip(step, 0.0, 1.0))
+    sigma = float(max(clearance_sigma, 1e-4))
+    if n_iters <= 0 or step_size <= 0.0:
+        return residual_3d.astype(np.float32, copy=True)
+
+    free = (~occupancy.astype(bool)).astype(np.float32)
+    if free.sum() <= 0.0:
+        return residual_3d.astype(np.float32, copy=True)
+
+    clearance = np.maximum(esdf.astype(np.float32), 0.0)
+    z = residual_3d.astype(np.float32, copy=True)
+    dirs = ((0, 1), (0, -1), (1, 0), (-1, 0))
+    for _ in range(n_iters):
+        accum = np.zeros_like(z, dtype=np.float32)
+        wsum = np.zeros_like(clearance, dtype=np.float32)
+        for dy, dx in dirs:
+            neigh_free = _shift2d_no_wrap(free, dy=dy, dx=dx)
+            neigh_clear = _shift2d_no_wrap(clearance, dy=dy, dx=dx)
+            clear_sim = np.exp(-np.abs(clearance - neigh_clear) / sigma).astype(np.float32)
+            w = (neigh_free * clear_sim).astype(np.float32)
+            neigh_val = _shift3d_no_wrap(z, dy=dy, dx=dx)
+            accum = accum + neigh_val * w[None, ...]
+            wsum = wsum + w
+        avg = accum / np.maximum(wsum[None, ...], 1e-6)
+        z = (z + step_size * (avg - z) * free[None, ...]).astype(np.float32)
+
+    z[:, occupancy.astype(bool)] = 0.0
+    return z
 
 
 def _apply_residual_calibration(
@@ -1218,6 +1407,18 @@ def _apply_residual_calibration(
     corridor_threshold: float,
     corridor_suppress: float,
     topq_quantile: float,
+    contrastive_bg_quantile: float = 0.0,
+    contrastive_neg_scale: float = 0.0,
+    contrastive_pos_scale: float = 1.0,
+    transport_iters: int = 0,
+    transport_step: float = 0.35,
+    transport_clearance_sigma: float = 0.45,
+    bottleneck_threshold: float = 0.0,
+    bottleneck_blend: float = 0.0,
+    bottleneck_gamma: float = 1.0,
+    open_boost: float = 0.0,
+    open_boost_topq: float = 0.0,
+    bottleneck_dampen: float = 0.0,
 ) -> np.ndarray:
     out = pred_res_3d.astype(np.float32, copy=True)
     free = ~occupancy.astype(bool)
@@ -1230,6 +1431,19 @@ def _apply_residual_calibration(
             if np.isfinite(bias) and bias > 0.0:
                 out = np.maximum(out - bias, 0.0).astype(np.float32)
 
+    q_bg = float(np.clip(contrastive_bg_quantile, 0.0, 0.95))
+    neg_scale = float(np.clip(contrastive_neg_scale, 0.0, 2.0))
+    pos_scale = float(max(contrastive_pos_scale, 0.0))
+    if q_bg > 0.0 and np.any(free):
+        vals = out[:, free].reshape(-1)
+        if vals.size > 0:
+            bg = float(np.quantile(vals, q_bg))
+            if np.isfinite(bg) and bg > 0.0:
+                centered = out - bg
+                pos = np.maximum(centered, 0.0) * pos_scale
+                neg = np.minimum(centered, 0.0) * neg_scale
+                out = (pos + neg).astype(np.float32)
+
     thr = float(max(corridor_threshold, 0.0))
     sup = float(np.clip(corridor_suppress, 0.0, 1.0))
     if thr > 0.0 and sup > 0.0:
@@ -1238,13 +1452,61 @@ def _apply_residual_calibration(
         scale = 1.0 - sup * corridor
         out = (out * scale[None, ...]).astype(np.float32)
 
+    adapt_open = float(max(open_boost, 0.0))
+    adapt_dampen = float(np.clip(bottleneck_dampen, 0.0, 1.0))
+    adapt_thr = float(max(corridor_threshold, bottleneck_threshold, 0.0))
+    if (adapt_open > 0.0 or adapt_dampen > 0.0) and adapt_thr > 0.0:
+        clearance = np.maximum(esdf.astype(np.float32), 0.0)
+        bottleneck = np.clip((adapt_thr - clearance) / max(adapt_thr, 1e-6), 0.0, 1.0)
+        gamma = float(max(bottleneck_gamma, 0.1))
+        bott_w = np.power(bottleneck, gamma).astype(np.float32)
+        open_w = (1.0 - bott_w).astype(np.float32)
+        pos_raw = np.maximum(out, 0.0).astype(np.float32)
+        q_boost = float(np.clip(open_boost_topq, 0.0, 0.999))
+        if adapt_open > 0.0 and q_boost > 0.0 and np.any(free):
+            vals = pos_raw[:, free].reshape(-1)
+            vals = vals[vals > 0.0]
+            if vals.size > 0:
+                thr_boost = float(np.quantile(vals, q_boost))
+                boost_mask = (pos_raw >= thr_boost).astype(np.float32)
+            else:
+                boost_mask = np.zeros_like(pos_raw, dtype=np.float32)
+        elif adapt_open > 0.0:
+            boost_mask = (pos_raw > 0.0).astype(np.float32)
+        else:
+            boost_mask = np.zeros_like(pos_raw, dtype=np.float32)
+        pos_gain = (1.0 + adapt_open * open_w[None, ...] * boost_mask).astype(np.float32)
+        damp_gain = (1.0 - adapt_dampen * bott_w).astype(np.float32)
+        pos = pos_raw * pos_gain * damp_gain[None, ...]
+        neg = np.minimum(out, 0.0) * damp_gain[None, ...]
+        out = (pos + neg).astype(np.float32)
+
     q_keep = float(np.clip(topq_quantile, 0.0, 0.999))
     if q_keep > 0.0 and np.any(free):
         vals = out[:, free].reshape(-1)
-        if vals.size > 0:
-            thr_keep = float(np.quantile(vals, q_keep))
+        vals_pos = vals[vals > 0.0]
+        if vals_pos.size > 0:
+            thr_keep = float(np.quantile(vals_pos, q_keep))
             if np.isfinite(thr_keep) and thr_keep > 0.0:
-                out = np.where(out >= thr_keep, out, 0.0).astype(np.float32)
+                keep_pos = (out > 0.0) & (out >= thr_keep)
+                out = np.where(keep_pos | (out <= 0.0), out, 0.0).astype(np.float32)
+
+    blend_thr = float(max(bottleneck_threshold, 0.0))
+    blend_ratio = float(np.clip(bottleneck_blend, 0.0, 1.0))
+    if int(max(transport_iters, 0)) > 0 and blend_ratio > 0.0 and blend_thr > 0.0:
+        transported = _transport_residual_obstacle_aware(
+            residual_3d=out,
+            occupancy=occupancy,
+            esdf=esdf,
+            iters=int(transport_iters),
+            step=float(transport_step),
+            clearance_sigma=float(transport_clearance_sigma),
+        )
+        clearance = np.maximum(esdf.astype(np.float32), 0.0)
+        bottleneck = np.clip((blend_thr - clearance) / max(blend_thr, 1e-6), 0.0, 1.0)
+        gamma = float(max(bottleneck_gamma, 0.1))
+        local_w = (blend_ratio * np.power(bottleneck, gamma)).astype(np.float32)
+        out = (out * (1.0 - local_w[None, ...]) + transported * local_w[None, ...]).astype(np.float32)
 
     out[:, occupancy.astype(bool)] = 0.0
     return out
@@ -1259,6 +1521,22 @@ def _make_ours_anchor(
     residual_corridor_threshold: float,
     residual_corridor_suppress: float,
     residual_topq_quantile: float,
+    residual_contrastive_bg_quantile: float,
+    residual_contrastive_neg_scale: float,
+    residual_contrastive_pos_scale: float,
+    residual_floor_ratio: float,
+    residual_transport_iters: int,
+    residual_transport_step: float,
+    residual_transport_clearance_sigma: float,
+    residual_bottleneck_threshold: float,
+    residual_bottleneck_blend: float,
+    residual_bottleneck_gamma: float,
+    residual_open_boost: float,
+    residual_open_boost_topq: float,
+    residual_open_boost_min_line_clearance: float,
+    residual_bottleneck_dampen: float,
+    residual_adaptive_trust_ratio: float,
+    residual_adaptive_trust_quantile: float,
     disable_temporal: bool,
     rs_base_override: np.ndarray | None = None,
 ) -> Callable[[float, float, float], float]:
@@ -1282,20 +1560,97 @@ def _make_ours_anchor(
     )
     pred_res = np.maximum(pred_res, 0.0).astype(np.float32)
     pred_res = np.clip(pred_res * float(max(residual_alpha, 0.0)), 0.0, float(max(residual_clip, 0.0))).astype(np.float32)
-    pred_res_3d = _match_yaw_channels(pred_res, yaw_bins=yaw_bins)
-    pred_res_3d = _apply_residual_calibration(
-        pred_res_3d=pred_res_3d,
+    pred_res_3d_raw = _match_yaw_channels(pred_res, yaw_bins=yaw_bins)
+    base_res_3d = _apply_residual_calibration(
+        pred_res_3d=pred_res_3d_raw,
         occupancy=case["occupancy"],
         esdf=case["esdf"],
         residual_bias_quantile=residual_bias_quantile,
         corridor_threshold=residual_corridor_threshold,
         corridor_suppress=residual_corridor_suppress,
         topq_quantile=residual_topq_quantile,
+        contrastive_bg_quantile=residual_contrastive_bg_quantile,
+        contrastive_neg_scale=residual_contrastive_neg_scale,
+        contrastive_pos_scale=residual_contrastive_pos_scale,
+        transport_iters=residual_transport_iters,
+        transport_step=residual_transport_step,
+        transport_clearance_sigma=residual_transport_clearance_sigma,
+        bottleneck_threshold=residual_bottleneck_threshold,
+        bottleneck_blend=residual_bottleneck_blend,
+        bottleneck_gamma=residual_bottleneck_gamma,
+        open_boost=0.0,
+        open_boost_topq=0.0,
+        bottleneck_dampen=0.0,
     )
 
-    return ResidualYawFieldHeuristic(
-        base_field_3d=rs_base.astype(np.float32),
-        residual_field_3d=pred_res_3d.astype(np.float32),
+    effective_open_boost = float(max(residual_open_boost, 0.0))
+    min_line_clear = float(max(residual_open_boost_min_line_clearance, 0.0))
+    if effective_open_boost > 0.0 and min_line_clear > 0.0:
+        line_mean_clear = _mean_line_clearance(
+            esdf=case["esdf"].astype(np.float32),
+            start=case["start"],
+            goal=case["goal"],
+            resolution=float(case["resolution"]),
+            samples_per_cell=2.0,
+        )
+        if np.isfinite(line_mean_clear) and line_mean_clear < min_line_clear:
+            effective_open_boost = 0.0
+
+    use_adaptive = bool(effective_open_boost > 0.0 or residual_bottleneck_dampen > 0.0)
+    if use_adaptive:
+        adaptive_res_3d = _apply_residual_calibration(
+            pred_res_3d=pred_res_3d_raw,
+            occupancy=case["occupancy"],
+            esdf=case["esdf"],
+            residual_bias_quantile=residual_bias_quantile,
+            corridor_threshold=residual_corridor_threshold,
+            corridor_suppress=residual_corridor_suppress,
+            topq_quantile=residual_topq_quantile,
+            contrastive_bg_quantile=residual_contrastive_bg_quantile,
+            contrastive_neg_scale=residual_contrastive_neg_scale,
+            contrastive_pos_scale=residual_contrastive_pos_scale,
+            transport_iters=residual_transport_iters,
+            transport_step=residual_transport_step,
+            transport_clearance_sigma=residual_transport_clearance_sigma,
+            bottleneck_threshold=residual_bottleneck_threshold,
+            bottleneck_blend=residual_bottleneck_blend,
+            bottleneck_gamma=residual_bottleneck_gamma,
+            open_boost=effective_open_boost,
+            open_boost_topq=residual_open_boost_topq,
+            bottleneck_dampen=residual_bottleneck_dampen,
+        )
+    else:
+        adaptive_res_3d = base_res_3d
+
+    trust_ratio = float(max(residual_adaptive_trust_ratio, 0.0))
+    if use_adaptive and trust_ratio > 0.0:
+        free = ~case["occupancy"].astype(bool)
+        if np.any(free):
+            q = float(np.clip(residual_adaptive_trust_quantile, 0.5, 0.999))
+            diff_vals = np.abs(adaptive_res_3d[:, free] - base_res_3d[:, free]).reshape(-1)
+            base_vals = np.abs(base_res_3d[:, free]).reshape(-1)
+            q_diff = float(np.quantile(diff_vals, q)) if diff_vals.size > 0 else 0.0
+            q_base = float(np.quantile(base_vals, q)) if base_vals.size > 0 else 0.0
+            ratio = q_diff / max(q_base, 1e-6)
+            if np.isfinite(ratio) and ratio > trust_ratio:
+                blend = float(np.clip(trust_ratio / max(ratio, 1e-6), 0.0, 1.0))
+                pred_res_3d = (base_res_3d + blend * (adaptive_res_3d - base_res_3d)).astype(np.float32)
+            else:
+                pred_res_3d = adaptive_res_3d.astype(np.float32)
+        else:
+            pred_res_3d = adaptive_res_3d.astype(np.float32)
+    else:
+        pred_res_3d = adaptive_res_3d.astype(np.float32)
+
+    # Fuse once to avoid dual trilinear interpolation at each node expansion.
+    fused = (rs_base.astype(np.float32) + pred_res_3d.astype(np.float32)).astype(np.float32)
+    floor_ratio = float(np.clip(residual_floor_ratio, 0.0, 1.0))
+    if floor_ratio > 0.0:
+        fused = np.maximum(fused, floor_ratio * rs_base.astype(np.float32)).astype(np.float32)
+    fused = np.clip(fused, 0.0, float(DEFAULT_CONFIG.dataset.max_teacher_value)).astype(np.float32)
+    fused[:, case["occupancy"].astype(bool)] = float(DEFAULT_CONFIG.dataset.max_teacher_value)
+    return YawFieldHeuristic(
+        field_3d=fused,
         resolution=float(case["resolution"]),
         max_value=float(DEFAULT_CONFIG.dataset.max_teacher_value),
         scale=1.0,
@@ -1395,6 +1750,22 @@ def _run_nonholonomic_experiment(
             args.residual_corridor_threshold,
             args.residual_corridor_suppress,
             args.residual_topq_quantile,
+            args.residual_contrastive_bg_quantile,
+            args.residual_contrastive_neg_scale,
+            args.residual_contrastive_pos_scale,
+            args.residual_floor_ratio,
+            args.residual_transport_iters,
+            args.residual_transport_step,
+            args.residual_transport_clearance_sigma,
+            args.residual_bottleneck_threshold,
+            args.residual_bottleneck_blend,
+            args.residual_bottleneck_gamma,
+            args.residual_open_boost,
+            args.residual_open_boost_topq,
+            args.residual_open_boost_min_line_clearance,
+            args.residual_bottleneck_dampen,
+            args.residual_adaptive_trust_ratio,
+            args.residual_adaptive_trust_quantile,
             disable_temporal=False,
             rs_base_override=rs_field,
         )
@@ -1545,6 +1916,22 @@ def _run_nonholonomic_experiment(
             args.residual_corridor_threshold,
             args.residual_corridor_suppress,
             args.residual_topq_quantile,
+            args.residual_contrastive_bg_quantile,
+            args.residual_contrastive_neg_scale,
+            args.residual_contrastive_pos_scale,
+            args.residual_floor_ratio,
+            args.residual_transport_iters,
+            args.residual_transport_step,
+            args.residual_transport_clearance_sigma,
+            args.residual_bottleneck_threshold,
+            args.residual_bottleneck_blend,
+            args.residual_bottleneck_gamma,
+            args.residual_open_boost,
+            args.residual_open_boost_topq,
+            args.residual_open_boost_min_line_clearance,
+            args.residual_bottleneck_dampen,
+            args.residual_adaptive_trust_ratio,
+            args.residual_adaptive_trust_quantile,
             disable_temporal=True,
             rs_base_override=rs_field,
         )
@@ -1635,6 +2022,22 @@ def _run_public_nonholonomic_experiment(
             args.residual_corridor_threshold,
             args.residual_corridor_suppress,
             args.residual_topq_quantile,
+            args.residual_contrastive_bg_quantile,
+            args.residual_contrastive_neg_scale,
+            args.residual_contrastive_pos_scale,
+            args.residual_floor_ratio,
+            args.residual_transport_iters,
+            args.residual_transport_step,
+            args.residual_transport_clearance_sigma,
+            args.residual_bottleneck_threshold,
+            args.residual_bottleneck_blend,
+            args.residual_bottleneck_gamma,
+            args.residual_open_boost,
+            args.residual_open_boost_topq,
+            args.residual_open_boost_min_line_clearance,
+            args.residual_bottleneck_dampen,
+            args.residual_adaptive_trust_ratio,
+            args.residual_adaptive_trust_quantile,
             disable_temporal=False,
             rs_base_override=rs_field,
         )
@@ -2114,6 +2517,22 @@ def main() -> None:
         "residual_corridor_threshold": args.residual_corridor_threshold,
         "residual_corridor_suppress": args.residual_corridor_suppress,
         "residual_topq_quantile": args.residual_topq_quantile,
+        "residual_contrastive_bg_quantile": args.residual_contrastive_bg_quantile,
+        "residual_contrastive_neg_scale": args.residual_contrastive_neg_scale,
+        "residual_contrastive_pos_scale": args.residual_contrastive_pos_scale,
+        "residual_floor_ratio": args.residual_floor_ratio,
+        "residual_transport_iters": args.residual_transport_iters,
+        "residual_transport_step": args.residual_transport_step,
+        "residual_transport_clearance_sigma": args.residual_transport_clearance_sigma,
+        "residual_bottleneck_threshold": args.residual_bottleneck_threshold,
+        "residual_bottleneck_blend": args.residual_bottleneck_blend,
+        "residual_bottleneck_gamma": args.residual_bottleneck_gamma,
+        "residual_open_boost": args.residual_open_boost,
+        "residual_open_boost_topq": args.residual_open_boost_topq,
+        "residual_open_boost_min_line_clearance": args.residual_open_boost_min_line_clearance,
+        "residual_bottleneck_dampen": args.residual_bottleneck_dampen,
+        "residual_adaptive_trust_ratio": args.residual_adaptive_trust_ratio,
+        "residual_adaptive_trust_quantile": args.residual_adaptive_trust_quantile,
         "esdf_anchor_alpha": args.esdf_anchor_alpha,
         "esdf_anchor_threshold": args.esdf_anchor_threshold,
         "case_splits": {

@@ -33,6 +33,8 @@ def _masked_loss(
     hard_rank_lambda: float = 0.0,
     hard_rank_topk: int = 64,
     hard_rank_margin: float = 0.01,
+    gradient_struct_lambda: float = 0.0,
+    laplacian_struct_lambda: float = 0.0,
 ) -> torch.Tensor:
     err = pred - target
     sq = err**2
@@ -118,6 +120,42 @@ def _masked_loss(
         if rank_terms:
             rank_loss = torch.stack(rank_terms).mean()
             total_loss = total_loss + float(hard_rank_lambda) * rank_loss
+
+    if float(gradient_struct_lambda) > 0.0:
+        # Structural consistency: preserve local slope field of teacher cost.
+        pdx = pred[..., 1:] - pred[..., :-1]
+        tdx = target[..., 1:] - target[..., :-1]
+        mdx = (mask[..., 1:] * mask[..., :-1]).to(pred.dtype)
+        if sample_weight is not None:
+            mdx = mdx * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
+        if standard_mask is not None:
+            mdx = mdx * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
+        gdx = (torch.abs(pdx - tdx) * mdx).sum() / mdx.sum().clamp_min(1.0)
+
+        pdy = pred[..., 1:, :] - pred[..., :-1, :]
+        tdy = target[..., 1:, :] - target[..., :-1, :]
+        mdy = (mask[..., 1:, :] * mask[..., :-1, :]).to(pred.dtype)
+        if sample_weight is not None:
+            mdy = mdy * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
+        if standard_mask is not None:
+            mdy = mdy * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
+        gdy = (torch.abs(pdy - tdy) * mdy).sum() / mdy.sum().clamp_min(1.0)
+        total_loss = total_loss + float(gradient_struct_lambda) * (gdx + gdy)
+
+    if float(laplacian_struct_lambda) > 0.0:
+        # Propagation-shape consistency using channel-wise Laplacian.
+        c = int(pred.shape[1])
+        lap_k = pred.new_tensor([[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]]).view(1, 1, 3, 3)
+        lap_w = lap_k.repeat(c, 1, 1, 1)
+        pl = torch.nn.functional.conv2d(pred, lap_w, padding=1, groups=c)
+        tl = torch.nn.functional.conv2d(target, lap_w, padding=1, groups=c)
+        ml = mask.to(pred.dtype)
+        if sample_weight is not None:
+            ml = ml * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
+        if standard_mask is not None:
+            ml = ml * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
+        lap_loss = (torch.abs(pl - tl) * ml).sum() / ml.sum().clamp_min(1.0)
+        total_loss = total_loss + float(laplacian_struct_lambda) * lap_loss
 
     return total_loss
 

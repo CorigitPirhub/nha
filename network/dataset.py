@@ -199,21 +199,46 @@ class HeuristicFieldDataset(Dataset):
         if self.prediction_mode == "residual":
             if rs_base is None:
                 raise RuntimeError("Residual mode requires RS base field.")
+
+            # Static residual should always be part of supervision.
+            # temporal_residual_3d is treated as dynamic increment on top of static residual.
+            static_res = np.maximum((teacher - rs_base).astype(np.float32), 0.0).astype(np.float32)
+            static_res = np.where(np.isfinite(static_res), static_res, 0.0).astype(np.float32)
+
             if self.use_temporal_context and temporal_residual is not None and temporal_residual.ndim == 4:
                 temporal_steps = int(temporal_residual.shape[0])
                 yaw_bins = int(temporal_residual.shape[1])
-                temp = temporal_residual.reshape(temporal_steps * yaw_bins, h, w).astype(np.float32)
+
+                temp = np.asarray(temporal_residual, dtype=np.float32)
                 temp = np.where(np.isfinite(temp), temp, 0.0).astype(np.float32)
                 temp = np.maximum(temp, 0.0).astype(np.float32)
-                pos = temp[temp > 0.0]
+
+                if static_res.shape[0] != yaw_bins:
+                    if static_res.shape[0] == 1:
+                        static_res_yaw = np.repeat(static_res, yaw_bins, axis=0).astype(np.float32)
+                    else:
+                        idx = (
+                            np.floor(np.arange(yaw_bins, dtype=np.float32) * (static_res.shape[0] / float(max(yaw_bins, 1))))
+                            .astype(np.int64)
+                        ) % static_res.shape[0]
+                        static_res_yaw = static_res[idx].astype(np.float32)
+                else:
+                    static_res_yaw = static_res
+
+                static_t = np.broadcast_to(static_res_yaw[None, ...], (temporal_steps, yaw_bins, h, w)).astype(np.float32)
+                target_t = (static_t + temp).astype(np.float32)
+                target_t = np.maximum(target_t, 0.0).astype(np.float32)
+
+                flat = target_t.reshape(temporal_steps * yaw_bins, h, w).astype(np.float32)
+                pos = flat[flat > 0.0]
                 if pos.size > 0:
                     clip_hi = float(np.percentile(pos, 99.0))
                 else:
                     clip_hi = float(2.0 * np.hypot(h * resolution, w * resolution))
                 clip_hi = float(np.clip(clip_hi, 1.0, 4.0 * np.hypot(h * resolution, w * resolution)))
-                target_raw = np.clip(temp, 0.0, clip_hi).astype(np.float32)
+                target_raw = np.clip(flat, 0.0, clip_hi).astype(np.float32)
             else:
-                target_raw = (teacher - rs_base).astype(np.float32)
+                target_raw = static_res.astype(np.float32)
         else:
             target_raw = teacher.astype(np.float32)
         target = (target_raw / max(scale, 1e-3)).astype(np.float32)
