@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from config import DEFAULT_CONFIG
 from env.esdf import compute_esdf
 from env.teacher import compute_2d_dijkstra_field
 from utils.common import ensure_dirs, set_seed
@@ -32,6 +33,7 @@ class QuerySpec:
 
 
 def parse_args() -> argparse.Namespace:
+    default_clearance = float(np.hypot(DEFAULT_CONFIG.vehicle.length * 0.5, DEFAULT_CONFIG.vehicle.width * 0.5))
     p = argparse.ArgumentParser(description="Convert Parasol-like narrow benchmarks to repo npz format")
     p.add_argument("--output-root", type=Path, default=Path("data/benchmark/parasol_narrow"))
     p.add_argument("--raw-root", type=Path, default=None, help="Optional raw map directory (png/pgm/npy/npz).")
@@ -57,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Split ratio of open-ppl tasks into train. Default 0.0 means all public tasks are in test split.",
+    )
+    p.add_argument(
+        "--min-clearance-m",
+        type=float,
+        default=default_clearance,
+        help="Minimum ESDF clearance (meters) required for mapped start/goal. Fallback keeps all tasks if unmet.",
     )
     return p.parse_args()
 
@@ -215,6 +223,13 @@ def _difficulty_from_occ(occ: np.ndarray) -> str:
 
 def _wrap_angle(a: float) -> float:
     return float(math.atan2(math.sin(a), math.cos(a)))
+
+
+def _query_angle_to_rad(v: float) -> float:
+    # Some query files store heading in degrees (e.g., -25), others in radians.
+    if abs(float(v)) > (2.0 * math.pi):
+        return float(np.deg2rad(v))
+    return float(v)
 
 
 def _scenario_from_name(name: str) -> str:
@@ -382,7 +397,8 @@ def _parse_query_pairs_from_text(text: str) -> list[tuple[tuple[float, float, fl
             continue
         x = float(nums[1]) if len(nums) >= 2 else float(nums[0])
         y = float(nums[2]) if len(nums) >= 3 else 0.0
-        yaw = float(nums[3]) if len(nums) >= 4 else 0.0
+        yaw_raw = float(nums[3]) if len(nums) >= 4 else 0.0
+        yaw = _query_angle_to_rad(yaw_raw)
         entries.append((x, y, yaw))
 
     pairs: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
@@ -508,6 +524,36 @@ def _snap_to_free(occ: np.ndarray, gx: int, gy: int) -> tuple[int, int] | None:
     return None
 
 
+def _snap_to_clearance(
+    occ: np.ndarray,
+    esdf: np.ndarray,
+    gx: int,
+    gy: int,
+    min_clearance: float,
+) -> tuple[int, int] | None:
+    h, w = occ.shape
+    gx = int(np.clip(gx, 0, w - 1))
+    gy = int(np.clip(gy, 0, h - 1))
+    if (not occ[gy, gx]) and float(esdf[gy, gx]) >= float(min_clearance):
+        return gx, gy
+
+    cand = np.argwhere((~occ) & (esdf >= float(min_clearance)))
+    if cand.size > 0:
+        dx = cand[:, 1].astype(np.float32) - float(gx)
+        dy = cand[:, 0].astype(np.float32) - float(gy)
+        idx = int(np.argmin(dx * dx + dy * dy))
+        yx = cand[idx]
+        return int(yx[1]), int(yx[0])
+
+    # Fallback: keep task but still bias toward largest clearance.
+    free = np.argwhere(~occ)
+    if free.size == 0:
+        return None
+    best_i = int(np.argmax(esdf[free[:, 0], free[:, 1]]))
+    yx = free[best_i]
+    return int(yx[1]), int(yx[0])
+
+
 def _convert_open_ppl_tasks(args: argparse.Namespace) -> dict | None:
     open_root = Path(args.open_ppl_root)
     if not open_root.exists() and not bool(args.no_auto_download):
@@ -542,13 +588,14 @@ def _convert_open_ppl_tasks(args: argparse.Namespace) -> dict | None:
             size=int(args.map_size),
             seed=int(args.seed) + 1003 + i_spec,
         )
+        esdf_map = compute_esdf(occ, resolution=float(args.resolution)).astype(np.float32)
         bounds = spec.bounds if spec.bounds is not None else _infer_bounds_from_pairs(spec.pairs)
 
         for i_pair, (s_raw, g_raw) in enumerate(spec.pairs):
             sg = _world_to_grid_from_bounds(float(s_raw[0]), float(s_raw[1]), bounds=bounds, size=int(args.map_size))
             gg = _world_to_grid_from_bounds(float(g_raw[0]), float(g_raw[1]), bounds=bounds, size=int(args.map_size))
-            s_snap = _snap_to_free(occ, sg[0], sg[1])
-            g_snap = _snap_to_free(occ, gg[0], gg[1])
+            s_snap = _snap_to_clearance(occ, esdf_map, sg[0], sg[1], float(args.min_clearance_m))
+            g_snap = _snap_to_clearance(occ, esdf_map, gg[0], gg[1], float(args.min_clearance_m))
 
             if g_snap is None:
                 free = np.argwhere(~occ)
@@ -566,13 +613,12 @@ def _convert_open_ppl_tasks(args: argparse.Namespace) -> dict | None:
                 continue
 
             if s_snap is None or (not np.isfinite(d2[s_snap[1], s_snap[0]])) or s_snap == g_snap:
-                # Fallback to farthest reachable free cell to preserve every public task.
-                iy, ix = np.unravel_index(int(np.argmax(np.where(np.isfinite(d2), d2, -1.0))), d2.shape)
-                if np.isfinite(d2[iy, ix]) and d2[iy, ix] > 1e-6 and (not occ[iy, ix]):
-                    s_snap = (int(ix), int(iy))
-                else:
-                    pick = reach[int(rng.integers(0, len(reach)))]
-                    s_snap = (int(pick[1]), int(pick[0]))
+                # Fallback to reachable cell with best clearance then distance.
+                reach_y = reach[:, 0]
+                reach_x = reach[:, 1]
+                score = esdf_map[reach_y, reach_x] * 10.0 + d2[reach_y, reach_x]
+                best_i = int(np.argmax(score))
+                s_snap = (int(reach_x[best_i]), int(reach_y[best_i]))
 
             start_xy = _grid_to_world(s_snap[0], s_snap[1], float(args.resolution))
             start = (float(start_xy[0]), float(start_xy[1]), _wrap_angle(float(s_raw[2])))

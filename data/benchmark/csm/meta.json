@@ -9,7 +9,7 @@
     "num_maps_test": 10,
     "train_count": 800,
     "test_count": 400,
-    "source": "movingai_street_png"
+    "source": "planning_datasets_packed_npz_fallback"
   },
   "splits": {
     "train": {
@@ -18,9 +18,9 @@
         "csm_city_street": 800
       },
       "difficulty_histogram": {
-        "hard": 499,
-        "medium": 213,
-        "simple": 88
+        "hard": 60,
+        "medium": 613,
+        "simple": 127
       },
       "num_maps": 20
     },
@@ -30,9 +30,9 @@
         "csm_city_street": 400
       },
       "difficulty_histogram": {
-        "hard": 272,
-        "medium": 83,
-        "simple": 45
+        "hard": 88,
+        "medium": 248,
+        "simple": 64
       },
       "num_maps": 10
     }

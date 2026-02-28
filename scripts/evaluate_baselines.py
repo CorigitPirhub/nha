@@ -41,16 +41,24 @@ class EvalRow:
     expansions: float
     path_length: float
     runtime_ms: float
+    infer_ms: float = 0.0
+    search_ms: float = 0.0
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run paper-grade benchmark comparisons")
     p.add_argument("--benchmark-root", type=Path, default=Path("data/benchmark"))
-    p.add_argument("--hard-root", type=Path, default=Path("data_hard_dynamic_v2/test"))
+    p.add_argument("--hard-root", type=Path, default=Path("data/benchmark/parasol_narrow/test"))
     p.add_argument("--parasol-root", type=Path, default=Path("data/benchmark/parasol_narrow/test"))
     p.add_argument("--paper-out", type=Path, default=Path("outputs/paper"))
+    p.add_argument(
+        "--experiments",
+        type=str,
+        default="exp1,exp2,exp3,exp4",
+        help="Comma-separated experiments to run: exp1(mp), exp2(csm), exp3(ablation), exp4(public_kinodynamic).",
+    )
 
-    p.add_argument("--ours-checkpoint", type=Path, default=Path("outputs/checkpoints/heuristic_net_hard_optimized.pt"))
+    p.add_argument("--ours-checkpoint", type=Path, default=Path("outputs/checkpoints/heuristic_net_generalization_unified_mixed_v2.pt"))
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--seed", type=int, default=7)
 
@@ -62,13 +70,51 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-neural-training", action="store_true")
 
     p.add_argument("--max-standard-cases", type=int, default=200)
+    p.add_argument(
+        "--max-mp-cases",
+        type=int,
+        default=-1,
+        help="Cap MP test cases for Exp1. >0: explicit cap; 0: all; <0: fallback to --max-standard-cases.",
+    )
+    p.add_argument(
+        "--max-csm-cases",
+        type=int,
+        default=-1,
+        help="Cap CSM test cases for Exp2. >0: explicit cap; 0: all; <0: fallback to --max-standard-cases.",
+    )
     p.add_argument("--max-nonholonomic-cases", type=int, default=80)
     p.add_argument("--max-ablation-cases", type=int, default=100)
+    p.add_argument(
+        "--max-exp3-cases",
+        type=int,
+        default=-1,
+        help="Cap Exp3 cases. >0: explicit cap; 0: all; <0: fallback to --max-nonholonomic-cases.",
+    )
+    p.add_argument(
+        "--max-exp4-cases",
+        type=int,
+        default=-1,
+        help="Cap Exp4 cases. >0: explicit cap; 0: all; <0: fallback to --max-public-cases.",
+    )
+    p.add_argument("--disable-exp2", action="store_true", help="Disable Experiment 2 output (keep other experiments).")
+    p.add_argument("--standard-only", action="store_true", help="Run only standard MP/CSM benchmarks (skip nonholonomic/public experiments).")
 
     p.add_argument("--grid-max-expansions", type=int, default=50000)
     p.add_argument("--hybrid-max-expansions", type=int, default=12000)
     p.add_argument("--hybrid-hard-max-expansions", type=int, default=13000)
     p.add_argument("--hybrid-maze-max-expansions", type=int, default=18000)
+    p.add_argument(
+        "--hybrid-exp4-max-expansions",
+        type=int,
+        default=20000,
+        help="Minimum Hybrid A* expansion budget for Exp4 public kinodynamic benchmark.",
+    )
+    p.add_argument(
+        "--hybrid-budget-cap",
+        type=int,
+        default=0,
+        help="When >0, cap Hybrid A* max expansions for nonholonomic experiments.",
+    )
     p.add_argument("--sampling-max-iters", type=int, default=1500)
     p.add_argument("--rs-field-yaw-bins", type=int, default=24)
     p.add_argument("--residual-alpha", type=float, default=1.5)
@@ -577,6 +623,8 @@ def _method_summary(rows: list[EvalRow]) -> dict[tuple[str, str, str], dict]:
             "success_rate": len(succ) / max(len(vals), 1),
             "avg_expansions": float(np.mean([v.expansions for v in succ])) if succ else float("nan"),
             "avg_path_length": float(np.mean([v.path_length for v in succ if np.isfinite(v.path_length)])) if succ else float("nan"),
+            "avg_infer_ms": float(np.mean([v.infer_ms for v in succ])) if succ else float("nan"),
+            "avg_search_ms": float(np.mean([v.search_ms for v in succ])) if succ else float("nan"),
             "avg_time_ms": float(np.mean([v.runtime_ms for v in succ])) if succ else float("nan"),
         }
     return out
@@ -594,6 +642,8 @@ def _write_summary_csv(summary: dict[tuple[str, str, str], dict], out_csv: Path)
             "success_rate",
             "avg_expansions",
             "avg_path_length",
+            "avg_infer_ms",
+            "avg_search_ms",
             "avg_time_ms",
         ])
         for (exp, ds, m) in sorted(summary.keys()):
@@ -606,6 +656,8 @@ def _write_summary_csv(summary: dict[tuple[str, str, str], dict], out_csv: Path)
                 f"{s['success_rate']:.6f}",
                 f"{s['avg_expansions']:.6f}",
                 f"{s['avg_path_length']:.6f}",
+                f"{s['avg_infer_ms']:.6f}",
+                f"{s['avg_search_ms']:.6f}",
                 f"{s['avg_time_ms']:.6f}",
             ])
 
@@ -728,55 +780,59 @@ def _write_experiment_section_tex(
     def line_for(exp: str, ds: str, method: str) -> str:
         s = summary.get((exp, ds, method), None)
         if s is None:
-            return f"{method} & -- & -- & -- & -- \\\\"
+            return f"{method} & -- & -- & -- & -- & -- \\\\"
         return (
             f"{method} & {s['success_rate']:.3f} & {s['avg_expansions']:.1f} & "
-            f"{s['avg_path_length']:.2f} & {s['avg_time_ms']:.2f} \\\\"
+            f"{s['avg_path_length']:.2f} & {s['avg_infer_ms']:.2f} & {s['avg_search_ms']:.2f} \\\\"
         )
+
+    exp3_ds = "hard"
+    if ("exp3_ablation", "parasol", "Full") in summary:
+        exp3_ds = "parasol"
 
     lines = []
     lines.append("\\section{Experiments}")
     lines.append("\\subsection{Experimental Setup}")
-    lines.append("We evaluate on public planning benchmarks (MP, CSM) and our nonholonomic hard scenarios.")
-    lines.append("All methods share identical maps, start/goal pairs, and expansion/iteration budgets.")
+    lines.append("We evaluate on public planning benchmarks (MP, CSM, and Parasol narrow-passage tasks).")
+    lines.append("All methods share identical maps, start/goal pairs, and search budgets for each experiment.")
     lines.append(
-        "Neural baselines (VIN and Neural A*) are trained with the same converted training split and evaluated on unseen test cases."
+        "Neural baselines (VIN and Neural A*) are trained with the same converted MP+CSM training split and evaluated on unseen test cases."
     )
     lines.append(
-        f"Our model checkpoint is \\texttt{{{config.get('ours_ckpt','outputs/checkpoints/heuristic_net_hard_optimized.pt')}}}."
+        f"Our model checkpoint is \\texttt{{{config.get('ours_ckpt','outputs/checkpoints/heuristic_net_generalization_unified_mixed_v2.pt')}}}."
     )
 
     lines.append("\\subsection{Datasets}")
     lines.append("\\begin{itemize}")
-    lines.append("\\item \\textbf{MP}: 8 environment families, each with 800 train and 100 test instances.")
-    lines.append("\\item \\textbf{CSM}: 30 city/street maps, split into 20 train maps and 10 test maps, converted to 64$\\times$64 crops.")
-    lines.append("\\item \\textbf{Hard Nonholonomic}: Our round-2 hard+dynamic dataset for Ackermann planning.")
+    lines.append("\\item \\textbf{Exp1 (MP)}: 8 environment families, full MP test split.")
+    lines.append("\\item \\textbf{Exp2 (CSM)}: city/street benchmark with official test split.")
+    lines.append("\\item \\textbf{Exp3/Exp4 (Parasol)}: public narrow-passage tasks (Bug Trap, Alpha, Flange and related scenes).")
     lines.append("\\end{itemize}")
 
-    lines.append("\\subsection{Experiment 1: Standard Benchmark (MP/CSM)}")
+    lines.append("\\subsection{Experiment 1: MP Benchmark}")
     lines.append("\\begin{table}[t]")
     lines.append("\\centering")
-    lines.append("\\caption{Standard benchmark results (success rate $\\uparrow$, expansions $\\downarrow$, path length $\\downarrow$, time $\\downarrow$).}")
-    lines.append("\\begin{tabular}{lcccc}")
+    lines.append("\\caption{MP benchmark results (success rate $\\uparrow$, expansions $\\downarrow$, path length $\\downarrow$, inference/search time $\\downarrow$).}")
+    lines.append("\\begin{tabular}{lccccc}")
     lines.append("\\toprule")
-    lines.append("Method & Success & Expansions & Path Len. & Time (ms) \\\\")
+    lines.append("Method & Success & Expansions & Path Len. & Infer (ms) & Search (ms) \\\\")
     lines.append("\\midrule")
     for m in ["A*", "Theta*", "VIN", "Neural A*", "Ours"]:
-        lines.append(line_for("exp1_standard", "mp+csm", m))
+        lines.append(line_for("exp1_mp", "mp", m))
     lines.append("\\bottomrule")
     lines.append("\\end{tabular}")
     lines.append("\\end{table}")
 
-    lines.append("\\subsection{Experiment 2: Nonholonomic and Narrow Scenarios}")
+    lines.append("\\subsection{Experiment 2: CSM Benchmark}")
     lines.append("\\begin{table}[t]")
     lines.append("\\centering")
-    lines.append("\\caption{Nonholonomic comparison on hard+narrow cases.}")
-    lines.append("\\begin{tabular}{lcccc}")
+    lines.append("\\caption{CSM benchmark results.}")
+    lines.append("\\begin{tabular}{lccccc}")
     lines.append("\\toprule")
-    lines.append("Method & Success & Expansions & Path Len. & Time (ms) \\\\")
+    lines.append("Method & Success & Expansions & Path Len. & Infer (ms) & Search (ms) \\\\")
     lines.append("\\midrule")
-    for m in ["Hybrid A* (RS)", "Kinodynamic RRT*", "Kinodynamic BIT*", "Ours"]:
-        lines.append(line_for("exp2_nonholonomic", "hard+narrow", m))
+    for m in ["A*", "Theta*", "VIN", "Neural A*", "Ours"]:
+        lines.append(line_for("exp2_csm", "csm", m))
     lines.append("\\bottomrule")
     lines.append("\\end{tabular}")
     lines.append("\\end{table}")
@@ -784,26 +840,26 @@ def _write_experiment_section_tex(
     lines.append("\\subsection{Experiment 3: Ablation}")
     lines.append("\\begin{table}[t]")
     lines.append("\\centering")
-    lines.append("\\caption{Ablation on hard scenarios.}")
-    lines.append("\\begin{tabular}{lcccc}")
+    lines.append("\\caption{Ablation on nonholonomic benchmark split.}")
+    lines.append("\\begin{tabular}{lccccc}")
     lines.append("\\toprule")
-    lines.append("Method & Success & Expansions & Path Len. & Time (ms) \\\\")
+    lines.append("Method & Success & Expansions & Path Len. & Infer (ms) & Search (ms) \\\\")
     lines.append("\\midrule")
     for m in ["Full", "No-Residual", "No-Residual+ESDF", "No-RS", "No-Temporal"]:
-        lines.append(line_for("exp3_ablation", "hard", m))
+        lines.append(line_for("exp3_ablation", exp3_ds, m))
     lines.append("\\bottomrule")
     lines.append("\\end{tabular}")
     lines.append("\\end{table}")
 
     has_exp4 = ("exp4_public_kinodynamic", "parasol", "Ours") in summary
     if has_exp4:
-        lines.append("\\subsection{Experiment 4: Public Kinodynamic Benchmarks}")
+        lines.append("\\subsection{Experiment 4: Public Kinodynamic Comparison}")
         lines.append("\\begin{table}[t]")
         lines.append("\\centering")
-        lines.append("\\caption{Parasol-style public narrow benchmark results.}")
-        lines.append("\\begin{tabular}{lcccc}")
+        lines.append("\\caption{Parasol public kinodynamic benchmark results.}")
+        lines.append("\\begin{tabular}{lccccc}")
         lines.append("\\toprule")
-        lines.append("Method & Success & Expansions & Path Len. & Time (ms) \\\\")
+        lines.append("Method & Success & Expansions & Path Len. & Infer (ms) & Search (ms) \\\\")
         lines.append("\\midrule")
         for m in ["Hybrid A* (RS)", "Kinodynamic RRT*", "Kinodynamic BIT*", "Ours"]:
             lines.append(line_for("exp4_public_kinodynamic", "parasol", m))
@@ -813,18 +869,11 @@ def _write_experiment_section_tex(
 
     lines.append("\\subsection{Discussion}")
     lines.append(
-        "On MP/CSM, our method reaches the same success rate as A*/Theta*/Neural A* and clearly improves efficiency over VIN and Neural A* in node expansions, while incurring extra runtime due neural inference."
+        "Across MP/CSM, our method keeps full success while reducing expansions versus neural-only baselines; on Parasol, RS-consistent prior remains the dominant factor and residual correction is measured by the Full vs No-Residual ablation."
     )
     lines.append(
-        "On hard nonholonomic cases, removing RS prior (No-RS) increases expansions by more than one order of magnitude; adding ESDF-only correction without learned residual provides a useful mid-point baseline for isolating learning gains."
+        "RRT* and BIT* are implemented with the same planner cost model (including reverse and steering penalties), providing fair nonholonomic sampling baselines."
     )
-    lines.append(
-        "In this implementation, RRT* and BIT* use RS connectors and planner-consistent costs to form kinodynamic sampling baselines under the same cost model as Hybrid A*."
-    )
-    if ("exp3_ablation_scene", "hard:maze", "Full") in summary:
-        lines.append(
-            "Scene-wise ablation further reports maze / narrow_passage / deadend subsets to localize where residual guidance helps or hurts."
-        )
 
     out_tex.write_text("\n".join(lines), encoding="utf-8")
 
@@ -860,7 +909,20 @@ def _run_standard_experiment(
             heuristic_map=None,
             record_expanded=(i == 0),
         )
-        rows.append(EvalRow("exp1_standard", ds, "A*", p.name, r_astar["success"], float(r_astar["expansions"]), _path_length(r_astar["path"]), float(r_astar["runtime_ms"])))
+        rows.append(
+            EvalRow(
+                "exp1_standard",
+                ds,
+                "A*",
+                p.name,
+                r_astar["success"],
+                float(r_astar["expansions"]),
+                _path_length(r_astar["path"]),
+                float(r_astar["runtime_ms"]),
+                infer_ms=0.0,
+                search_ms=float(r_astar["runtime_ms"]),
+            )
+        )
 
         r_theta = _theta_star(
             occupancy=s.occupancy,
@@ -869,7 +931,20 @@ def _run_standard_experiment(
             goal_xy=goal_xy,
             max_expansions=args.grid_max_expansions,
         )
-        rows.append(EvalRow("exp1_standard", ds, "Theta*", p.name, r_theta["success"], float(r_theta["expansions"]), _path_length(r_theta["path"]), float(r_theta["runtime_ms"])))
+        rows.append(
+            EvalRow(
+                "exp1_standard",
+                ds,
+                "Theta*",
+                p.name,
+                r_theta["success"],
+                float(r_theta["expansions"]),
+                _path_length(r_theta["path"]),
+                float(r_theta["runtime_ms"]),
+                infer_ms=0.0,
+                search_ms=float(r_theta["runtime_ms"]),
+            )
+        )
 
         t0 = time.perf_counter()
         h_vin = vin.predict_field(s.occupancy, s.start, s.goal, s.resolution)
@@ -883,7 +958,20 @@ def _run_standard_experiment(
             heuristic_map=h_vin,
             heuristic_weight=1.0,
         )
-        rows.append(EvalRow("exp1_standard", ds, "VIN", p.name, r_vin["success"], float(r_vin["expansions"]), _path_length(r_vin["path"]), float(r_vin["runtime_ms"] + infer_ms)))
+        rows.append(
+            EvalRow(
+                "exp1_standard",
+                ds,
+                "VIN",
+                p.name,
+                r_vin["success"],
+                float(r_vin["expansions"]),
+                _path_length(r_vin["path"]),
+                float(r_vin["runtime_ms"] + infer_ms),
+                infer_ms=float(infer_ms),
+                search_ms=float(r_vin["runtime_ms"]),
+            )
+        )
 
         t0 = time.perf_counter()
         h_na = neural_astar.predict_field(s.occupancy, s.start, s.goal, s.resolution)
@@ -897,7 +985,20 @@ def _run_standard_experiment(
             heuristic_map=h_na,
             heuristic_weight=1.0,
         )
-        rows.append(EvalRow("exp1_standard", ds, "Neural A*", p.name, r_na["success"], float(r_na["expansions"]), _path_length(r_na["path"]), float(r_na["runtime_ms"] + infer_ms)))
+        rows.append(
+            EvalRow(
+                "exp1_standard",
+                ds,
+                "Neural A*",
+                p.name,
+                r_na["success"],
+                float(r_na["expansions"]),
+                _path_length(r_na["path"]),
+                float(r_na["runtime_ms"] + infer_ms),
+                infer_ms=float(infer_ms),
+                search_ms=float(r_na["runtime_ms"]),
+            )
+        )
 
         t0 = time.perf_counter()
         base_override = None
@@ -928,7 +1029,20 @@ def _run_standard_experiment(
             heuristic_weight=1.0,
             record_expanded=(i == 0),
         )
-        rows.append(EvalRow("exp1_standard", ds, "Ours", p.name, r_ours["success"], float(r_ours["expansions"]), _path_length(r_ours["path"]), float(r_ours["runtime_ms"] + infer_ms)))
+        rows.append(
+            EvalRow(
+                "exp1_standard",
+                ds,
+                "Ours",
+                p.name,
+                r_ours["success"],
+                float(r_ours["expansions"]),
+                _path_length(r_ours["path"]),
+                float(r_ours["runtime_ms"] + infer_ms),
+                infer_ms=float(infer_ms),
+                search_ms=float(r_ours["runtime_ms"]),
+            )
+        )
 
         if i == 0:
             fig_payload = {
@@ -1018,6 +1132,8 @@ def _planner_budget(planner_cfg, case: dict, args: argparse.Namespace) -> int:
         cap = max(cap, int(args.hybrid_hard_max_expansions))
     if case["scenario"] in {"maze_single", "deadend_labyrinth"}:
         cap = max(cap, int(args.hybrid_maze_max_expansions))
+    if int(args.hybrid_budget_cap) > 0:
+        cap = min(cap, int(args.hybrid_budget_cap))
     return cap
 
 
@@ -1238,6 +1354,7 @@ def _run_nonholonomic_experiment(
     ours_predictor: NeuralHeuristicPredictor,
     args: argparse.Namespace,
     seed: int,
+    run_sampling_compare: bool = True,
 ) -> tuple[list[EvalRow], list[EvalRow], list[EvalRow]]:
     rows_exp2: list[EvalRow] = []
     rows_exp3: list[EvalRow] = []
@@ -1254,7 +1371,20 @@ def _run_nonholonomic_experiment(
         # Experiment 2: Ours vs Hybrid RS vs RRT* vs BIT*
         rs_anchor = _make_rs_anchor(case, rs_field=rs_field)
         r_rs = _run_hybrid_method(case, rs_anchor, max_expansions=budget)
-        rows_exp2.append(EvalRow("exp2_nonholonomic", "hard+narrow", "Hybrid A* (RS)", case_id, r_rs["success"], r_rs["expansions"], _path_length(r_rs["path"]), r_rs["runtime_ms"]))
+        rows_exp2.append(
+            EvalRow(
+                "exp2_nonholonomic",
+                "hard+narrow",
+                "Hybrid A* (RS)",
+                case_id,
+                r_rs["success"],
+                r_rs["expansions"],
+                _path_length(r_rs["path"]),
+                r_rs["runtime_ms"],
+                infer_ms=0.0,
+                search_ms=r_rs["runtime_ms"],
+            )
+        )
 
         ours_anchor = _make_ours_anchor(
             case,
@@ -1269,37 +1399,103 @@ def _run_nonholonomic_experiment(
             rs_base_override=rs_field,
         )
         r_ours = _run_hybrid_method(case, ours_anchor, max_expansions=budget)
-        rows_exp2.append(EvalRow("exp2_nonholonomic", "hard+narrow", "Ours", case_id, r_ours["success"], r_ours["expansions"], _path_length(r_ours["path"]), r_ours["runtime_ms"]))
-
-        r_rrt = kinodynamic_rrt_star(
-            occupancy=case["occupancy"],
-            resolution=case["resolution"],
-            start=case["start"],
-            goal=case["goal"],
-            vehicle_cfg=case["vehicle"],
-            planner_cfg=case["planner_cfg"],
-            max_iters=samp_iters,
-            rng=rng,
-            esdf=case["esdf"],
+        rows_exp2.append(
+            EvalRow(
+                "exp2_nonholonomic",
+                "hard+narrow",
+                "Ours",
+                case_id,
+                r_ours["success"],
+                r_ours["expansions"],
+                _path_length(r_ours["path"]),
+                r_ours["runtime_ms"],
+                infer_ms=0.0,
+                search_ms=r_ours["runtime_ms"],
+            )
         )
-        rows_exp2.append(EvalRow("exp2_nonholonomic", "hard+narrow", "Kinodynamic RRT*", case_id, r_rrt["success"], float(r_rrt["expansions"]), _path_length(r_rrt["path"]), float(r_rrt["runtime_ms"])))
 
-        r_bit = kinodynamic_bit_star(
-            occupancy=case["occupancy"],
-            resolution=case["resolution"],
-            start=case["start"],
-            goal=case["goal"],
-            vehicle_cfg=case["vehicle"],
-            planner_cfg=case["planner_cfg"],
-            max_iters=samp_iters,
-            rng=rng,
-            esdf=case["esdf"],
-        )
-        rows_exp2.append(EvalRow("exp2_nonholonomic", "hard+narrow", "Kinodynamic BIT*", case_id, r_bit["success"], float(r_bit["expansions"]), _path_length(r_bit["path"]), float(r_bit["runtime_ms"])))
+        if run_sampling_compare:
+            r_rrt = kinodynamic_rrt_star(
+                occupancy=case["occupancy"],
+                resolution=case["resolution"],
+                start=case["start"],
+                goal=case["goal"],
+                vehicle_cfg=case["vehicle"],
+                planner_cfg=case["planner_cfg"],
+                max_iters=samp_iters,
+                rng=rng,
+                esdf=case["esdf"],
+            )
+            rows_exp2.append(
+                EvalRow(
+                    "exp2_nonholonomic",
+                    "hard+narrow",
+                    "Kinodynamic RRT*",
+                    case_id,
+                    r_rrt["success"],
+                    float(r_rrt["expansions"]),
+                    _path_length(r_rrt["path"]),
+                    float(r_rrt["runtime_ms"]),
+                    infer_ms=0.0,
+                    search_ms=float(r_rrt["runtime_ms"]),
+                )
+            )
+
+            r_bit = kinodynamic_bit_star(
+                occupancy=case["occupancy"],
+                resolution=case["resolution"],
+                start=case["start"],
+                goal=case["goal"],
+                vehicle_cfg=case["vehicle"],
+                planner_cfg=case["planner_cfg"],
+                max_iters=samp_iters,
+                rng=rng,
+                esdf=case["esdf"],
+            )
+            rows_exp2.append(
+                EvalRow(
+                    "exp2_nonholonomic",
+                    "hard+narrow",
+                    "Kinodynamic BIT*",
+                    case_id,
+                    r_bit["success"],
+                    float(r_bit["expansions"]),
+                    _path_length(r_bit["path"]),
+                    float(r_bit["runtime_ms"]),
+                    infer_ms=0.0,
+                    search_ms=float(r_bit["runtime_ms"]),
+                )
+            )
 
         # Experiment 3: ablation
-        rows_exp3.append(EvalRow("exp3_ablation", "hard", "No-Residual", case_id, r_rs["success"], r_rs["expansions"], _path_length(r_rs["path"]), r_rs["runtime_ms"]))
-        rows_exp3.append(EvalRow("exp3_ablation", "hard", "Full", case_id, r_ours["success"], r_ours["expansions"], _path_length(r_ours["path"]), r_ours["runtime_ms"]))
+        rows_exp3.append(
+            EvalRow(
+                "exp3_ablation",
+                "hard",
+                "No-Residual",
+                case_id,
+                r_rs["success"],
+                r_rs["expansions"],
+                _path_length(r_rs["path"]),
+                r_rs["runtime_ms"],
+                infer_ms=0.0,
+                search_ms=r_rs["runtime_ms"],
+            )
+        )
+        rows_exp3.append(
+            EvalRow(
+                "exp3_ablation",
+                "hard",
+                "Full",
+                case_id,
+                r_ours["success"],
+                r_ours["expansions"],
+                _path_length(r_ours["path"]),
+                r_ours["runtime_ms"],
+                infer_ms=0.0,
+                search_ms=r_ours["runtime_ms"],
+            )
+        )
 
         no_res_esdf_anchor = _make_no_residual_esdf_anchor(
             case,
@@ -1318,12 +1514,27 @@ def _run_nonholonomic_experiment(
                 r_no_res_esdf["expansions"],
                 _path_length(r_no_res_esdf["path"]),
                 r_no_res_esdf["runtime_ms"],
+                infer_ms=0.0,
+                search_ms=r_no_res_esdf["runtime_ms"],
             )
         )
 
         no_rs_anchor = _make_no_rs_anchor(case, ours_predictor, residual_clip=args.residual_clip)
         r_no_rs = _run_hybrid_method(case, no_rs_anchor, max_expansions=budget)
-        rows_exp3.append(EvalRow("exp3_ablation", "hard", "No-RS", case_id, r_no_rs["success"], r_no_rs["expansions"], _path_length(r_no_rs["path"]), r_no_rs["runtime_ms"]))
+        rows_exp3.append(
+            EvalRow(
+                "exp3_ablation",
+                "hard",
+                "No-RS",
+                case_id,
+                r_no_rs["success"],
+                r_no_rs["expansions"],
+                _path_length(r_no_rs["path"]),
+                r_no_rs["runtime_ms"],
+                infer_ms=0.0,
+                search_ms=r_no_rs["runtime_ms"],
+            )
+        )
 
         no_temp_anchor = _make_ours_anchor(
             case,
@@ -1338,7 +1549,20 @@ def _run_nonholonomic_experiment(
             rs_base_override=rs_field,
         )
         r_no_temp = _run_hybrid_method(case, no_temp_anchor, max_expansions=budget)
-        rows_exp3.append(EvalRow("exp3_ablation", "hard", "No-Temporal", case_id, r_no_temp["success"], r_no_temp["expansions"], _path_length(r_no_temp["path"]), r_no_temp["runtime_ms"]))
+        rows_exp3.append(
+            EvalRow(
+                "exp3_ablation",
+                "hard",
+                "No-Temporal",
+                case_id,
+                r_no_temp["success"],
+                r_no_temp["expansions"],
+                _path_length(r_no_temp["path"]),
+                r_no_temp["runtime_ms"],
+                infer_ms=0.0,
+                search_ms=r_no_temp["runtime_ms"],
+            )
+        )
 
         bucket = _scenario_bucket(case["scenario"])
         scene_ds = f"hard:{bucket}"
@@ -1359,6 +1583,8 @@ def _run_nonholonomic_experiment(
                     rr["expansions"],
                     _path_length(rr["path"]),
                     rr["runtime_ms"],
+                    infer_ms=0.0,
+                    search_ms=rr["runtime_ms"],
                 )
             )
         if i_case % 5 == 0 or i_case == len(files):
@@ -1379,12 +1605,26 @@ def _run_public_nonholonomic_experiment(
         case = _load_nonholonomic_case(p)
         case_id = p.name
         budget = _planner_budget(case["planner_cfg"], case, args)
+        budget = max(int(budget), int(max(1, args.hybrid_exp4_max_expansions)))
         samp_iters = int(max(200, args.sampling_max_iters))
         rs_field = _compute_case_rs_field(case, yaw_bins_cap=int(args.rs_field_yaw_bins))
 
         rs_anchor = _make_rs_anchor(case, rs_field=rs_field)
         r_rs = _run_hybrid_method(case, rs_anchor, max_expansions=budget)
-        rows.append(EvalRow("exp4_public_kinodynamic", "parasol", "Hybrid A* (RS)", case_id, r_rs["success"], r_rs["expansions"], _path_length(r_rs["path"]), r_rs["runtime_ms"]))
+        rows.append(
+            EvalRow(
+                "exp4_public_kinodynamic",
+                "parasol",
+                "Hybrid A* (RS)",
+                case_id,
+                r_rs["success"],
+                r_rs["expansions"],
+                _path_length(r_rs["path"]),
+                r_rs["runtime_ms"],
+                infer_ms=0.0,
+                search_ms=r_rs["runtime_ms"],
+            )
+        )
 
         ours_anchor = _make_ours_anchor(
             case,
@@ -1399,7 +1639,20 @@ def _run_public_nonholonomic_experiment(
             rs_base_override=rs_field,
         )
         r_ours = _run_hybrid_method(case, ours_anchor, max_expansions=budget)
-        rows.append(EvalRow("exp4_public_kinodynamic", "parasol", "Ours", case_id, r_ours["success"], r_ours["expansions"], _path_length(r_ours["path"]), r_ours["runtime_ms"]))
+        rows.append(
+            EvalRow(
+                "exp4_public_kinodynamic",
+                "parasol",
+                "Ours",
+                case_id,
+                r_ours["success"],
+                r_ours["expansions"],
+                _path_length(r_ours["path"]),
+                r_ours["runtime_ms"],
+                infer_ms=0.0,
+                search_ms=r_ours["runtime_ms"],
+            )
+        )
 
         r_rrt = kinodynamic_rrt_star(
             occupancy=case["occupancy"],
@@ -1412,7 +1665,20 @@ def _run_public_nonholonomic_experiment(
             rng=rng,
             esdf=case["esdf"],
         )
-        rows.append(EvalRow("exp4_public_kinodynamic", "parasol", "Kinodynamic RRT*", case_id, r_rrt["success"], float(r_rrt["expansions"]), _path_length(r_rrt["path"]), float(r_rrt["runtime_ms"])))
+        rows.append(
+            EvalRow(
+                "exp4_public_kinodynamic",
+                "parasol",
+                "Kinodynamic RRT*",
+                case_id,
+                r_rrt["success"],
+                float(r_rrt["expansions"]),
+                _path_length(r_rrt["path"]),
+                float(r_rrt["runtime_ms"]),
+                infer_ms=0.0,
+                search_ms=float(r_rrt["runtime_ms"]),
+            )
+        )
 
         r_bit = kinodynamic_bit_star(
             occupancy=case["occupancy"],
@@ -1425,7 +1691,20 @@ def _run_public_nonholonomic_experiment(
             rng=rng,
             esdf=case["esdf"],
         )
-        rows.append(EvalRow("exp4_public_kinodynamic", "parasol", "Kinodynamic BIT*", case_id, r_bit["success"], float(r_bit["expansions"]), _path_length(r_bit["path"]), float(r_bit["runtime_ms"])))
+        rows.append(
+            EvalRow(
+                "exp4_public_kinodynamic",
+                "parasol",
+                "Kinodynamic BIT*",
+                case_id,
+                r_bit["success"],
+                float(r_bit["expansions"]),
+                _path_length(r_bit["path"]),
+                float(r_bit["runtime_ms"]),
+                infer_ms=0.0,
+                search_ms=float(r_bit["runtime_ms"]),
+            )
+        )
         if i_case % 5 == 0 or i_case == len(files):
             print(f"[exp4] processed {i_case}/{len(files)} public nonholonomic cases")
 
@@ -1436,9 +1715,27 @@ def _collect_files(root: Path, max_cases: int, seed: int) -> list[Path]:
     return select_files(sorted(Path(root).glob("sample_*.npz")), max_cases, seed=seed)
 
 
+def _parse_experiment_set(raw: str) -> set[str]:
+    tokens = [t.strip().lower() for t in str(raw).split(",") if t.strip()]
+    if not tokens:
+        return {"exp1", "exp2", "exp3", "exp4"}
+    valid = {"exp1", "exp2", "exp3", "exp4"}
+    bad = [t for t in tokens if t not in valid]
+    if bad:
+        raise ValueError(f"Unknown experiments: {bad}. Valid values are {sorted(valid)}")
+    return set(tokens)
+
+
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
+    run_exps = _parse_experiment_set(args.experiments)
+    if args.standard_only:
+        run_exps = run_exps.intersection({"exp1", "exp2"})
+    if args.disable_exp2:
+        run_exps = set([e for e in run_exps if e != "exp2"])
+    if not run_exps:
+        raise ValueError("No experiments selected after applying --experiments/--standard-only/--disable-exp2.")
 
     paper_out = Path(args.paper_out)
     figures_dir = paper_out / "figures"
@@ -1452,119 +1749,179 @@ def main() -> None:
     csm_train = args.benchmark_root / "csm" / "train"
     csm_test = args.benchmark_root / "csm" / "test"
 
-    if not mp_train.exists() or not mp_test.exists() or not csm_train.exists() or not csm_test.exists():
-        raise FileNotFoundError(
-            "Benchmark datasets missing. Run: python scripts/convert_benchmark_datasets.py --output-root data/benchmark"
-        )
+    if ("exp1" in run_exps) or ("exp2" in run_exps):
+        if not mp_train.exists() or not mp_test.exists() or not csm_train.exists() or not csm_test.exists():
+            raise FileNotFoundError(
+                "Benchmark datasets missing. Run: python scripts/convert_benchmark_datasets.py --output-root data/benchmark"
+            )
+
+    if "exp3" in run_exps and not Path(args.hard_root).exists():
+        raise FileNotFoundError(f"Exp3 root missing: {args.hard_root}")
+    if "exp4" in run_exps and not Path(args.parasol_root).exists():
+        raise FileNotFoundError(f"Exp4 root missing: {args.parasol_root}")
 
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         args.device = "cpu"
 
-    # Train/load neural baselines.
+    vin = None
+    neural_astar = None
     vin_ckpt = ckpt_dir / "vin_baseline.pt"
     na_ckpt = ckpt_dir / "neural_astar_baseline.pt"
+    if ("exp1" in run_exps) or ("exp2" in run_exps):
+        if (not args.skip_neural_training) or (not vin_ckpt.exists()) or (not na_ckpt.exists()):
+            # Build temporary combined dirs by symlink for fair training split.
+            tmp_train = logs_dir / "tmp_train_combined"
+            tmp_val = logs_dir / "tmp_val_combined"
+            ensure_dirs([tmp_train, tmp_val])
+            for p in list(tmp_train.glob("sample_*.npz")) + list(tmp_val.glob("sample_*.npz")):
+                p.unlink()
 
-    if (not args.skip_neural_training) or (not vin_ckpt.exists()) or (not na_ckpt.exists()):
-        # Build temporary combined dirs by symlink for fair training split.
-        tmp_train = logs_dir / "tmp_train_combined"
-        tmp_val = logs_dir / "tmp_val_combined"
-        ensure_dirs([tmp_train, tmp_val])
-        for p in list(tmp_train.glob("sample_*.npz")) + list(tmp_val.glob("sample_*.npz")):
-            p.unlink()
+            train_files = select_files(
+                sorted(mp_train.glob("sample_*.npz")) + sorted(csm_train.glob("sample_*.npz")),
+                args.train_max_samples,
+                seed=args.seed + 301,
+            )
+            val_files = select_files(
+                sorted(mp_test.glob("sample_*.npz")) + sorted(csm_test.glob("sample_*.npz")),
+                args.val_max_samples,
+                seed=args.seed + 303,
+            )
 
-        train_files = select_files(
-            sorted(mp_train.glob("sample_*.npz")) + sorted(csm_train.glob("sample_*.npz")),
-            args.train_max_samples,
-            seed=args.seed + 301,
-        )
-        val_files = select_files(
-            sorted(mp_test.glob("sample_*.npz")) + sorted(csm_test.glob("sample_*.npz")),
-            args.val_max_samples,
-            seed=args.seed + 303,
-        )
+            for i, p in enumerate(train_files):
+                dst = tmp_train / f"sample_{i:06d}.npz"
+                if dst.exists() or dst.is_symlink():
+                    dst.unlink()
+                dst.symlink_to(p.resolve())
+            for i, p in enumerate(val_files):
+                dst = tmp_val / f"sample_{i:06d}.npz"
+                if dst.exists() or dst.is_symlink():
+                    dst.unlink()
+                dst.symlink_to(p.resolve())
 
-        for i, p in enumerate(train_files):
-            dst = tmp_train / f"sample_{i:06d}.npz"
-            if dst.exists() or dst.is_symlink():
-                dst.unlink()
-            dst.symlink_to(p.resolve())
-        for i, p in enumerate(val_files):
-            dst = tmp_val / f"sample_{i:06d}.npz"
-            if dst.exists() or dst.is_symlink():
-                dst.unlink()
-            dst.symlink_to(p.resolve())
+            vin_train_info = train_vin(
+                train_dir=tmp_train,
+                val_dir=tmp_val,
+                checkpoint_out=vin_ckpt,
+                seed=args.seed,
+                device=args.device,
+                epochs=args.train_neural_epochs,
+                batch_size=args.train_neural_batch,
+                lr=args.train_neural_lr,
+                max_train_samples=0,
+                max_val_samples=0,
+            )
+            na_train_info = train_neural_astar(
+                train_dir=tmp_train,
+                val_dir=tmp_val,
+                checkpoint_out=na_ckpt,
+                seed=args.seed,
+                device=args.device,
+                epochs=args.train_neural_epochs,
+                batch_size=args.train_neural_batch,
+                lr=args.train_neural_lr,
+                max_train_samples=0,
+                max_val_samples=0,
+            )
+            (logs_dir / "neural_training_meta.json").write_text(
+                json.dumps({"vin": vin_train_info, "neural_astar": na_train_info}, indent=2), encoding="utf-8"
+            )
 
-        vin_train_info = train_vin(
-            train_dir=tmp_train,
-            val_dir=tmp_val,
-            checkpoint_out=vin_ckpt,
-            seed=args.seed,
-            device=args.device,
-            epochs=args.train_neural_epochs,
-            batch_size=args.train_neural_batch,
-            lr=args.train_neural_lr,
-            max_train_samples=0,
-            max_val_samples=0,
-        )
-        na_train_info = train_neural_astar(
-            train_dir=tmp_train,
-            val_dir=tmp_val,
-            checkpoint_out=na_ckpt,
-            seed=args.seed,
-            device=args.device,
-            epochs=args.train_neural_epochs,
-            batch_size=args.train_neural_batch,
-            lr=args.train_neural_lr,
-            max_train_samples=0,
-            max_val_samples=0,
-        )
-        (logs_dir / "neural_training_meta.json").write_text(
-            json.dumps({"vin": vin_train_info, "neural_astar": na_train_info}, indent=2), encoding="utf-8"
-        )
+        vin = VINLite.load(vin_ckpt, device=args.device)
+        neural_astar = NeuralAStarLite.load(na_ckpt, device=args.device)
 
-    vin = VINLite.load(vin_ckpt, device=args.device)
-    neural_astar = NeuralAStarLite.load(na_ckpt, device=args.device)
     ours_predictor = NeuralHeuristicPredictor(args.ours_checkpoint, device=args.device, gaussian_sigma=DEFAULT_CONFIG.dataset.gaussian_sigma)
 
-    # Experiment 1
-    mp_test_files = _collect_files(mp_test, max_cases=max(1, args.max_standard_cases // 2), seed=args.seed + 401)
-    csm_test_files = _collect_files(csm_test, max_cases=max(1, args.max_standard_cases // 2), seed=args.seed + 403)
-    rows_exp1, fig_payload = _run_standard_experiment(
-        mp_test_files=mp_test_files,
-        csm_test_files=csm_test_files,
-        vin=vin,
-        neural_astar=neural_astar,
-        ours_predictor=ours_predictor,
-        args=args,
-    )
-
-    # Experiment 2/3
-    hard_files = _collect_files(args.hard_root, max_cases=args.max_nonholonomic_cases, seed=args.seed + 501)
-    if args.parasol_root.exists():
-        narrow_extra = _collect_files(args.parasol_root, max_cases=max(1, args.max_nonholonomic_cases // 3), seed=args.seed + 503)
-    else:
-        # fallback: use narrow/deadend subset from hard split
-        narrow_extra = []
-        for p in sorted(Path(args.hard_root).glob("sample_*.npz")):
-            with np.load(p, allow_pickle=False) as z:
-                sc = str(z["scenario"]) if "scenario" in z else ""
-            if sc in {"narrow_passage", "deadend_labyrinth", "maze_single"}:
-                narrow_extra.append(p)
-        narrow_extra = select_files(narrow_extra, max(1, args.max_nonholonomic_cases // 3), seed=args.seed + 505)
-
-    nonh_files = sorted({p.resolve(): p for p in (hard_files + narrow_extra)}.values(), key=lambda x: str(x))
-    nonh_files = nonh_files[: max(1, args.max_nonholonomic_cases)]
-
-    rows_exp2, rows_exp3, rows_exp3_scene = _run_nonholonomic_experiment(
-        files=nonh_files,
-        ours_predictor=ours_predictor,
-        args=args,
-        seed=args.seed,
-    )
-
+    rows_exp1: list[EvalRow] = []
+    rows_exp2: list[EvalRow] = []
+    rows_exp3: list[EvalRow] = []
+    rows_exp3_scene: list[EvalRow] = []
     rows_exp4: list[EvalRow] = []
-    if args.parasol_root.exists():
-        public_files = _collect_files(args.parasol_root, max_cases=max(1, args.max_public_cases), seed=args.seed + 601)
+    fig_payload: dict = {}
+    mp_test_files: list[Path] = []
+    csm_test_files: list[Path] = []
+    nonh_files: list[Path] = []
+    public_files: list[Path] = []
+
+    if "exp1" in run_exps:
+        if vin is None or neural_astar is None:
+            raise RuntimeError("VIN/Neural A* not initialized for Exp1.")
+        if int(args.max_mp_cases) == 0:
+            mp_cap = 0
+        elif int(args.max_mp_cases) > 0:
+            mp_cap = int(args.max_mp_cases)
+        else:
+            mp_cap = int(args.max_standard_cases)
+        mp_test_files = _collect_files(mp_test, max_cases=mp_cap, seed=args.seed + 401)
+        rows_std_mp, fig_mp = _run_standard_experiment(
+            mp_test_files=mp_test_files,
+            csm_test_files=[],
+            vin=vin,
+            neural_astar=neural_astar,
+            ours_predictor=ours_predictor,
+            args=args,
+        )
+        rows_exp1 = [replace(r, experiment="exp1_mp") for r in rows_std_mp if r.dataset == "mp"]
+        if fig_mp:
+            fig_payload = fig_mp
+
+    if "exp2" in run_exps:
+        if vin is None or neural_astar is None:
+            raise RuntimeError("VIN/Neural A* not initialized for Exp2.")
+        if int(args.max_csm_cases) == 0:
+            csm_cap = 0
+        elif int(args.max_csm_cases) > 0:
+            csm_cap = int(args.max_csm_cases)
+        else:
+            csm_cap = int(args.max_standard_cases)
+        csm_test_files = _collect_files(csm_test, max_cases=csm_cap, seed=args.seed + 403)
+        rows_std_csm, fig_csm = _run_standard_experiment(
+            mp_test_files=[],
+            csm_test_files=csm_test_files,
+            vin=vin,
+            neural_astar=neural_astar,
+            ours_predictor=ours_predictor,
+            args=args,
+        )
+        rows_exp2 = [replace(r, experiment="exp2_csm") for r in rows_std_csm if r.dataset == "csm"]
+        if (not fig_payload) and fig_csm:
+            fig_payload = fig_csm
+
+    exp3_ds = "hard"
+    if "exp3" in run_exps:
+        if int(args.max_exp3_cases) == 0:
+            exp3_cap = 0
+        elif int(args.max_exp3_cases) > 0:
+            exp3_cap = int(args.max_exp3_cases)
+        else:
+            exp3_cap = int(args.max_nonholonomic_cases)
+        nonh_files = _collect_files(args.hard_root, max_cases=exp3_cap, seed=args.seed + 501)
+        _, rows_exp3_raw, rows_exp3_scene_raw = _run_nonholonomic_experiment(
+            files=nonh_files,
+            ours_predictor=ours_predictor,
+            args=args,
+            seed=args.seed,
+            run_sampling_compare=False,
+        )
+
+        hard_root_resolved = Path(args.hard_root).resolve()
+        parasol_root_resolved = Path(args.parasol_root).resolve() if Path(args.parasol_root).exists() else None
+        if parasol_root_resolved is not None and hard_root_resolved == parasol_root_resolved:
+            exp3_ds = "parasol"
+
+        rows_exp3 = [replace(r, dataset=exp3_ds) for r in rows_exp3_raw]
+        rows_exp3_scene = []
+        for r in rows_exp3_scene_raw:
+            suffix = str(r.dataset).split(":", 1)[1] if ":" in str(r.dataset) else str(r.dataset)
+            rows_exp3_scene.append(replace(r, dataset=f"{exp3_ds}:{suffix}"))
+
+    if "exp4" in run_exps:
+        if int(args.max_exp4_cases) == 0:
+            exp4_cap = 0
+        elif int(args.max_exp4_cases) > 0:
+            exp4_cap = int(args.max_exp4_cases)
+        else:
+            exp4_cap = int(args.max_public_cases)
+        public_files = _collect_files(args.parasol_root, max_cases=exp4_cap, seed=args.seed + 601)
         if public_files:
             rows_exp4 = _run_public_nonholonomic_experiment(
                 files=public_files,
@@ -1574,7 +1931,7 @@ def main() -> None:
             )
 
     # Trim ablation cases if requested.
-    if args.max_ablation_cases > 0:
+    if rows_exp3 and args.max_ablation_cases > 0:
         keep = set([r.case_id for r in rows_exp3 if r.method == "Full"])
         keep_ids = sorted(list(keep))[: int(args.max_ablation_cases)]
         keep_set = set(keep_ids)
@@ -1582,58 +1939,110 @@ def main() -> None:
         rows_exp3_scene = [r for r in rows_exp3_scene if r.case_id in keep_set]
 
     all_rows = rows_exp1 + rows_exp2 + rows_exp3 + rows_exp3_scene + rows_exp4
+    if not all_rows:
+        raise FileNotFoundError(
+            "No evaluation rows were generated. Check dataset roots and selected experiments."
+        )
     summary = _method_summary(all_rows)
 
-    # Aggregate exp1 across MP+CSM for paper table.
+    # Aggregate standard benchmark as separate MP/CSM experiments and combined MP+CSM.
     exp1_methods = ["A*", "Theta*", "VIN", "Neural A*", "Ours"]
     for m in exp1_methods:
-        vals = [r for r in rows_exp1 if r.method == m]
-        succ = [r for r in vals if r.success]
-        summary[("exp1_standard", "mp+csm", m)] = {
-            "num_cases": len(vals),
-            "success_rate": len(succ) / max(len(vals), 1),
-            "avg_expansions": float(np.mean([v.expansions for v in succ])) if succ else float("nan"),
-            "avg_path_length": float(np.mean([v.path_length for v in succ if np.isfinite(v.path_length)])) if succ else float("nan"),
-            "avg_time_ms": float(np.mean([v.runtime_ms for v in succ])) if succ else float("nan"),
-        }
+        vals_mp = [r for r in rows_exp1 if r.method == m]
+        succ_mp = [r for r in vals_mp if r.success]
+        if vals_mp:
+            summary[("exp1_mp", "mp", m)] = {
+                "num_cases": len(vals_mp),
+                "success_rate": len(succ_mp) / max(len(vals_mp), 1),
+                "avg_expansions": float(np.mean([v.expansions for v in succ_mp])) if succ_mp else float("nan"),
+                "avg_path_length": float(np.mean([v.path_length for v in succ_mp if np.isfinite(v.path_length)])) if succ_mp else float("nan"),
+                "avg_infer_ms": float(np.mean([v.infer_ms for v in succ_mp])) if succ_mp else float("nan"),
+                "avg_search_ms": float(np.mean([v.search_ms for v in succ_mp])) if succ_mp else float("nan"),
+                "avg_time_ms": float(np.mean([v.runtime_ms for v in succ_mp])) if succ_mp else float("nan"),
+            }
+
+        vals_csm = [r for r in rows_exp2 if r.method == m]
+        succ_csm = [r for r in vals_csm if r.success]
+        if vals_csm:
+            summary[("exp2_csm", "csm", m)] = {
+                "num_cases": len(vals_csm),
+                "success_rate": len(succ_csm) / max(len(vals_csm), 1),
+                "avg_expansions": float(np.mean([v.expansions for v in succ_csm])) if succ_csm else float("nan"),
+                "avg_path_length": float(np.mean([v.path_length for v in succ_csm if np.isfinite(v.path_length)])) if succ_csm else float("nan"),
+                "avg_infer_ms": float(np.mean([v.infer_ms for v in succ_csm])) if succ_csm else float("nan"),
+                "avg_search_ms": float(np.mean([v.search_ms for v in succ_csm])) if succ_csm else float("nan"),
+                "avg_time_ms": float(np.mean([v.runtime_ms for v in succ_csm])) if succ_csm else float("nan"),
+            }
+
+        vals_std = vals_mp + vals_csm
+        succ_std = [r for r in vals_std if r.success]
+        if vals_std:
+            summary[("exp1_standard", "mp+csm", m)] = {
+                "num_cases": len(vals_std),
+                "success_rate": len(succ_std) / max(len(vals_std), 1),
+                "avg_expansions": float(np.mean([v.expansions for v in succ_std])) if succ_std else float("nan"),
+                "avg_path_length": float(np.mean([v.path_length for v in succ_std if np.isfinite(v.path_length)])) if succ_std else float("nan"),
+                "avg_infer_ms": float(np.mean([v.infer_ms for v in succ_std])) if succ_std else float("nan"),
+                "avg_search_ms": float(np.mean([v.search_ms for v in succ_std])) if succ_std else float("nan"),
+                "avg_time_ms": float(np.mean([v.runtime_ms for v in succ_std])) if succ_std else float("nan"),
+            }
 
     out_csv = paper_out / "exp_results_summary.csv"
     _write_summary_csv(summary, out_csv)
 
     # Figures.
-    _save_bar_svg(
-        rows=[(m, summary[("exp1_standard", "mp+csm", m)]["success_rate"]) for m in exp1_methods],
-        title="Exp1 Standard Benchmark: Success Rate",
-        y_label="success",
-        out_path=figures_dir / "exp1_success_rate.svg",
-    )
-    _save_bar_svg(
-        rows=[(m, summary[("exp1_standard", "mp+csm", m)]["avg_expansions"]) for m in exp1_methods],
-        title="Exp1 Standard Benchmark: Avg Expansions",
-        y_label="expansions",
-        out_path=figures_dir / "exp1_expansions.svg",
-    )
+    if ("exp1_mp", "mp", "Ours") in summary:
+        _save_bar_svg(
+            rows=[
+                (m, summary[("exp1_mp", "mp", m)]["success_rate"])
+                for m in exp1_methods
+            ],
+            title="Exp1 MP Benchmark: Success Rate",
+            y_label="success",
+            out_path=figures_dir / "exp1_mp_success_rate.svg",
+        )
+        _save_bar_svg(
+            rows=[
+                (m, summary[("exp1_mp", "mp", m)]["avg_expansions"])
+                for m in exp1_methods
+            ],
+            title="Exp1 MP Benchmark: Avg Expansions",
+            y_label="expansions",
+            out_path=figures_dir / "exp1_mp_expansions.svg",
+        )
 
-    _save_bar_svg(
-        rows=[
-            (m, summary[("exp2_nonholonomic", "hard+narrow", m)]["success_rate"])
-            for m in ["Hybrid A* (RS)", "Kinodynamic RRT*", "Kinodynamic BIT*", "Ours"]
-        ],
-        title="Exp2 Nonholonomic: Success Rate",
-        y_label="success",
-        out_path=figures_dir / "exp2_success_rate.svg",
-    )
-    _save_bar_svg(
-        rows=[
-            (m, summary[("exp3_ablation", "hard", m)]["success_rate"])
-            for m in ["Full", "No-Residual", "No-Residual+ESDF", "No-RS", "No-Temporal"]
-        ],
-        title="Exp3 Ablation: Success Rate",
-        y_label="success",
-        out_path=figures_dir / "exp3_success_rate.svg",
-    )
+    if ("exp2_csm", "csm", "Ours") in summary:
+        _save_bar_svg(
+            rows=[
+                (m, summary[("exp2_csm", "csm", m)]["success_rate"])
+                for m in exp1_methods
+            ],
+            title="Exp2 CSM Benchmark: Success Rate",
+            y_label="success",
+            out_path=figures_dir / "exp2_csm_success_rate.svg",
+        )
+        _save_bar_svg(
+            rows=[
+                (m, summary[("exp2_csm", "csm", m)]["avg_expansions"])
+                for m in exp1_methods
+            ],
+            title="Exp2 CSM Benchmark: Avg Expansions",
+            y_label="expansions",
+            out_path=figures_dir / "exp2_csm_expansions.svg",
+        )
+
+    if ("exp3_ablation", exp3_ds, "Full") in summary:
+        _save_bar_svg(
+            rows=[
+                (m, summary[("exp3_ablation", exp3_ds, m)]["success_rate"])
+                for m in ["Full", "No-Residual", "No-Residual+ESDF", "No-RS", "No-Temporal"]
+            ],
+            title=f"Exp3 Ablation ({exp3_ds}): Success Rate",
+            y_label="success",
+            out_path=figures_dir / "exp3_ablation_success_rate.svg",
+        )
     scene_rows: list[tuple[str, float]] = []
-    for ds in ["hard:maze", "hard:narrow_passage", "hard:deadend", "hard:other"]:
+    for ds in [f"{exp3_ds}:maze", f"{exp3_ds}:narrow_passage", f"{exp3_ds}:deadend", f"{exp3_ds}:other"]:
         if ("exp3_ablation_scene", ds, "Full") in summary:
             tag = ds.split(":", 1)[1]
             scene_rows.append((f"{tag}/Full", summary[("exp3_ablation_scene", ds, "Full")]["success_rate"]))
@@ -1645,7 +2054,7 @@ def main() -> None:
             rows=scene_rows,
             title="Exp3 Scene-wise: Success Rate (Full vs No-Residual)",
             y_label="success",
-            out_path=figures_dir / "exp3_scene_success_rate.svg",
+            out_path=figures_dir / "exp3_ablation_scene_success_rate.svg",
         )
 
     if rows_exp4:
@@ -1680,13 +2089,19 @@ def main() -> None:
         "seed": args.seed,
         "device": args.device,
         "ours_ckpt": str(args.ours_checkpoint),
-        "vin_ckpt": str(vin_ckpt),
-        "neural_astar_ckpt": str(na_ckpt),
+        "vin_ckpt": str(vin_ckpt) if vin_ckpt.exists() else "",
+        "neural_astar_ckpt": str(na_ckpt) if na_ckpt.exists() else "",
+        "experiments": sorted(list(run_exps)),
         "cli_args": cli_args,
         "max_standard_cases": args.max_standard_cases,
+        "max_mp_cases": args.max_mp_cases,
+        "max_csm_cases": args.max_csm_cases,
         "max_nonholonomic_cases": args.max_nonholonomic_cases,
         "max_ablation_cases": args.max_ablation_cases,
         "max_public_cases": args.max_public_cases,
+        "max_exp3_cases": args.max_exp3_cases,
+        "max_exp4_cases": args.max_exp4_cases,
+        "standard_only": bool(args.standard_only),
         "grid_max_expansions": args.grid_max_expansions,
         "hybrid_max_expansions": args.hybrid_max_expansions,
         "hybrid_hard_max_expansions": args.hybrid_hard_max_expansions,
@@ -1705,8 +2120,9 @@ def main() -> None:
             "mp_test_files": [p.name for p in mp_test_files],
             "csm_test_files": [p.name for p in csm_test_files],
             "nonholonomic_files": [p.name for p in nonh_files],
-            "public_nonholonomic_files": [p.case_id for p in rows_exp4[::4]] if rows_exp4 else [],
+            "public_nonholonomic_files": [p.name for p in public_files],
         },
+        "exp3_dataset": exp3_ds,
     }
     (logs_dir / "experiment_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
 

@@ -114,14 +114,53 @@ def _pick_random_start(
     occupancy: np.ndarray,
     min_dist_m: float,
     rng: np.random.Generator,
+    unreachable_value: float = 1024.0,
 ) -> tuple[int, int] | None:
-    valid = np.argwhere((~occupancy) & np.isfinite(dist) & (dist >= min_dist_m))
+    candidate_mask = (
+        (~occupancy)
+        & np.isfinite(dist)
+        & (dist >= float(min_dist_m))
+        & (~np.isclose(dist, float(unreachable_value), atol=1e-6))
+    )
+    valid = np.argwhere(candidate_mask)
     if valid.size == 0:
-        valid = np.argwhere((~occupancy) & np.isfinite(dist) & (dist > 0.0))
+        valid = np.argwhere(
+            (~occupancy)
+            & np.isfinite(dist)
+            & (dist > 0.0)
+            & (~np.isclose(dist, float(unreachable_value), atol=1e-6))
+        )
         if valid.size == 0:
             return None
     yx = valid[int(rng.integers(0, len(valid)))]
-    return int(yx[1]), int(yx[0])
+    sx, sy = int(yx[1]), int(yx[0])
+    d = float(dist[sy, sx])
+    assert not np.isclose(d, float(unreachable_value), atol=1e-6), "sample_start_goal picked unreachable sentinel"
+    assert np.isfinite(d), "sample_start_goal picked infinite distance"
+    return sx, sy
+
+
+def _decode_mp_teacher_distance(raw_dist: np.ndarray, unreachable_value: float = 1024.0) -> np.ndarray:
+    raw = raw_dist.astype(np.float32)
+    finite = raw[np.isfinite(raw)]
+    if finite.size == 0:
+        return np.full_like(raw, np.inf, dtype=np.float32)
+
+    # MP packed labels may use negative signed distances (reachable) and -1024 for unreachable.
+    neg_ratio = float(np.mean(finite < 0.0))
+    if neg_ratio >= 0.5:
+        dist = np.maximum(-raw, 0.0).astype(np.float32)
+    else:
+        dist = np.maximum(raw, 0.0).astype(np.float32)
+
+    sent = float(unreachable_value)
+    sentinel_mask = (
+        np.isclose(np.abs(raw), sent, atol=1e-3)
+        | np.isclose(dist, sent, atol=1e-3)
+        | (dist >= sent - 1e-3)
+    )
+    dist[sentinel_mask] = np.inf
+    return dist.astype(np.float32)
 
 
 def _difficulty_from_occ_ratio(occ: np.ndarray) -> str:
@@ -273,13 +312,16 @@ def _convert_mp(cfg: ConvertConfig, planning_repo: Path) -> dict:
             occ = np.logical_not(free)
             goal_map = train_goals[i, 0]
             raw_dist = train_dist[i, 0].astype(np.float32)
-            dist = np.maximum(-raw_dist, 0.0).astype(np.float32)
+            dist = _decode_mp_teacher_distance(raw_dist, unreachable_value=1024.0)
             dist[occ] = np.inf
             gy, gx = np.unravel_index(int(np.argmax(goal_map)), goal_map.shape)
-            pick = _pick_random_start(dist, occ, min_dist_m=4.0 * cfg.resolution_m, rng=rng)
+            pick = _pick_random_start(dist, occ, min_dist_m=4.0 * cfg.resolution_m, rng=rng, unreachable_value=1024.0)
             if pick is None:
                 continue
             sx, sy = pick
+            d_start = float(dist[sy, sx])
+            assert not np.isclose(d_start, 1024.0, atol=1e-6), "sample_start_goal picked sentinel 1024.0"
+            assert np.isfinite(d_start), "sample_start_goal picked non-finite teacher distance"
             start_xy = _grid_to_world(sx, sy, cfg.resolution_m)
             goal_xy = _grid_to_world(int(gx), int(gy), cfg.resolution_m)
 
@@ -303,13 +345,16 @@ def _convert_mp(cfg: ConvertConfig, planning_repo: Path) -> dict:
             occ = np.logical_not(free)
             goal_map = test_goals[i, 0]
             raw_dist = test_dist[i, 0].astype(np.float32)
-            dist = np.maximum(-raw_dist, 0.0).astype(np.float32)
+            dist = _decode_mp_teacher_distance(raw_dist, unreachable_value=1024.0)
             dist[occ] = np.inf
             gy, gx = np.unravel_index(int(np.argmax(goal_map)), goal_map.shape)
-            pick = _pick_random_start(dist, occ, min_dist_m=4.0 * cfg.resolution_m, rng=rng)
+            pick = _pick_random_start(dist, occ, min_dist_m=4.0 * cfg.resolution_m, rng=rng, unreachable_value=1024.0)
             if pick is None:
                 continue
             sx, sy = pick
+            d_start = float(dist[sy, sx])
+            assert not np.isclose(d_start, 1024.0, atol=1e-6), "sample_start_goal picked sentinel 1024.0"
+            assert np.isfinite(d_start), "sample_start_goal picked non-finite teacher distance"
             start_xy = _grid_to_world(sx, sy, cfg.resolution_m)
             goal_xy = _grid_to_world(int(gx), int(gy), cfg.resolution_m)
 
@@ -479,14 +524,19 @@ def _convert_csm_from_packed_npz(cfg: ConvertConfig, planning_repo: Path) -> dic
         idx = 0
         n = min(limit, x.shape[0])
         for i in range(n):
-            occ = x[i].astype(bool)
+            free = x[i] > 0.5
+            occ = np.logical_not(free)
             goal_map = g[i, 0]
-            dist = d[i, 0].astype(np.float32)
+            raw_dist = d[i, 0].astype(np.float32)
+            dist = _decode_mp_teacher_distance(raw_dist, unreachable_value=4096.0)
+            dist[occ] = np.inf
             gy, gx = np.unravel_index(int(np.argmax(goal_map)), goal_map.shape)
-            pick = _pick_random_start(dist, occ, min_dist_m=6.0 * cfg.resolution_m, rng=rng)
+            pick = _pick_random_start(dist, occ, min_dist_m=6.0 * cfg.resolution_m, rng=rng, unreachable_value=4096.0)
             if pick is None:
                 continue
             sx, sy = pick
+            d_start = float(dist[sy, sx])
+            assert np.isfinite(d_start), "sample_start_goal picked non-finite teacher distance (CSM packed)"
             start_xy = _grid_to_world(sx, sy, cfg.resolution_m)
             goal_xy = _grid_to_world(int(gx), int(gy), cfg.resolution_m)
             out = out_dir / f"sample_{idx:06d}.npz"
@@ -574,11 +624,11 @@ def main() -> None:
 
     print("[2/3] Converting CSM dataset...")
     try:
-        csm_info = _convert_csm_from_maps(cfg, planning_repo)
-    except Exception as e:
-        print(f"[warn] CSM raw-map conversion failed: {e}")
-        print("[warn] Falling back to packed CSM npz conversion.")
         csm_info = _convert_csm_from_packed_npz(cfg, planning_repo)
+    except Exception as e:
+        print(f"[warn] CSM packed-npz conversion failed: {e}")
+        print("[warn] Falling back to raw-map conversion.")
+        csm_info = _convert_csm_from_maps(cfg, planning_repo)
 
     print("[3/3] Writing metadata...")
     mp_root = cfg.output_root / "mp"
