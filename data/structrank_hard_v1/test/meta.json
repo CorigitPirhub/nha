@@ -1,0 +1,43 @@
+{
+  "split": "test",
+  "num_samples": 0,
+  "template_histogram": {},
+  "difficulty_histogram": {},
+  "task_histogram": {},
+  "obstacle_distribution_histogram": {},
+  "teacher_mode": "reeds_shepp_consistent",
+  "teacher_yaw_bins": 8,
+  "teacher_rs_backend": "approx",
+  "teacher_rs_step_size": 1.0,
+  "hybrid_obstacle_alpha": 0.15,
+  "hybrid_obstacle_threshold_m": 1.6,
+  "dynamic_horizon": 24,
+  "dynamic_dt": 0.45,
+  "include_rs_base": true,
+  "difficulty_filter": [
+    "hard"
+  ],
+  "template_filter": [
+    "narrow_passage",
+    "maze_single",
+    "deadend_labyrinth",
+    "unstructured",
+    "dense_random"
+  ],
+  "task_filter": [
+    "narrow_passage",
+    "dynamic_avoid",
+    "deadend_reverse",
+    "long_detour"
+  ],
+  "obstacle_distribution_filter": [
+    "random",
+    "along_path",
+    "cluster"
+  ],
+  "map": {
+    "height": 64,
+    "width": 64,
+    "resolution": 0.5
+  }
+}

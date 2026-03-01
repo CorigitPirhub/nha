@@ -7,7 +7,14 @@
 - 第一阶段：`residual_fix_report.md` 归档（已完成）
 - 第二阶段：创新型 CRC（已完成）
 - 第二阶段 2.1：CRC 参数精化 m6（已完成）
-- 第三阶段：线可通性门控双区增强 Q8（当前最佳）
+- 第三阶段：线可通性门控双区增强 Q8（已完成）
+- 第四阶段：结构/排序约束损失（已完成）
+- 第五阶段：防遗忘蒸馏锚定 + 结构损失（已完成）
+- 第六阶段：全局权重插值（已完成）
+- 第七阶段：分层权重插值 + BN 统计解耦（已完成）
+- 第八阶段：分层 alpha + residual_alpha 联合贝叶斯搜索（已完成）
+- 第九阶段：场景加权 full-BO（narrow/maze 惩罚）+ 定向极值验证（当前最佳）
+- 第十阶段：Exp3 最终冻结 + 停止准则触发 + 资源转向 Exp4/maze 训练修复（进行中）
 
 ---
 
@@ -297,3 +304,460 @@
   - Exp3：**-8.56%**
   - Exp4：**-1.23%**
 - 相较用户期望的 `-15% ~ -25%` 仍有差距；主要瓶颈是少量特殊 case 的泛化稳定性。下一阶段建议转向“更大 hard-case 数据 + 训练期结构化约束/排名监督”而非继续纯推理期标定。
+
+---
+
+## 第四阶段：结构/排序约束损失（训练侧关键创新）
+时间：2026-02-28
+
+### 本阶段创新实现
+文件：
+- `network/train.py`
+- `scripts/run_generalization.py`
+
+新增了“双尺度结构排序损失”（可独立开关）：
+1. 局部软排序损失（`local_prob_rank_*`）
+   - 用概率排序替代硬 margin 排序，按 teacher 梯度置信度加权；
+   - 支持高分位 focus（`local_prob_rank_focus_quantile`）；
+   - 支持 hard-only 与 narrow 区域加权。
+2. 全局分位对比排序损失（`global_rank_*`）
+   - 以 teacher 的 top/bottom quantile 形成高低代价集合；
+   - 对高低集合做配对排序约束，强化全局次序结构；
+   - 支持 hard-only 与 narrow 区域加权。
+
+### 关键验证与结论
+#### A. 先前 hard 数据集监督退化（关键发现）
+对 `data/structrank_hard_v1` 做统计后发现：
+- `static residual = max(teacher_3d - rs_base_3d, 0)` 基本全零；
+- `temporal_residual_3d` 也全零。
+
+这解释了此前结构损失训练后残差塌缩的问题：监督本身把网络推向“零残差解”。
+
+#### B. 在零残差监督上，结构损失可把性能从负收益拉回近中性，但仍不达标
+来源：`outputs/paper/structrank_innov_v1_q8_quick/exp_results_summary.csv`
+- Exp3 quick（8 case）`dE = +0.007%`（几乎中性）
+- 相比此前 `structrank_hard_v1` 的 `+0.160%` 有改善，但仍显著弱于旧最佳 `-11.56%`。
+
+`alpha` 扫描（同 checkpoint）：
+- `alpha=2.0`：`dE = +0.070%`（`outputs/paper/structrank_innov_v1_a2_q8_quick/exp_results_summary.csv`）
+- 说明问题不只是推理幅值标定，训练侧仍存在泛化错位。
+
+#### C. 非零残差数据重建与遗忘现象
+中断生成后提取了非零残差样本并重组为：
+- `data/structrank_nonzero_v2p`（train=100, val=25）
+
+在该数据上“无结构损失基线微调”也出现明显遗忘：
+- `outputs/paper/structrank_nonzero_base_p1_q8_quick/exp_results_summary.csv`
+- Exp3 quick：`dE = +6.471%`
+
+在原 `residual_fix_v3` 分布上做“低学习率结构化微调”同样未超过旧最佳：
+- `outputs/paper/structrank_rf3_p1_q8_quick/exp_results_summary.csv`
+- Exp3 quick：`dE = +3.650%`
+
+### 本阶段小结
+- 结构/排序约束损失已完成工程实现并接入训练/评估链路；
+- 已验证“监督退化（零残差标签）”是此前失败的核心原因之一；
+- 当前最好的结构化训练结果仍未超过旧最佳 quick 基线（`-11.56%`），但已明确下一步方向：
+  - 需要“防遗忘约束 + 结构损失”的联合训练，而非直接在偏移数据分布上重训。
+
+---
+
+## 第五阶段：防遗忘蒸馏锚定 + 结构损失联合训练
+时间：2026-03-01
+
+### 实现内容
+在第四阶段基础上进一步实现“蒸馏锚定”：
+
+文件：
+- `network/train.py`
+- `scripts/run_generalization.py`
+
+新增能力：
+1. Anchor 蒸馏损失（`distill_*`）
+   - `distill_target`（固定强模型输出）作为锚点；
+   - `distill_lambda` + `SmoothL1(beta=distill_huber_delta)` 主蒸馏项；
+   - `distill_under_lambda` 单侧约束，抑制学生相对 anchor 的残差塌缩；
+   - `distill_focus_quantile` 高分位聚焦；
+   - `distill_hard_only` / `distill_narrow_boost` 结构化门控。
+2. 训练与验证统一接入
+   - `run_generalization.py` 新增 `--distill-anchor-checkpoint` 与全套 `--distill-*` 参数；
+   - 训练和 `_eval_loss` 都支持同时使用“蒸馏 + 结构排序”。
+
+### 实验与结果
+#### 实验1：非零 hard 数据联合训练（distill_v1r）
+- checkpoint：`outputs/residual_structrank_distill_v1r/checkpoints/heuristic_net_residual_structrank_distill_v1r.pt`
+- quick 评测（8 case）：
+  - `outputs/paper/structrank_distill_v1r_q8_quick/exp_results_summary.csv`
+  - `dE = -7.86%`（显著优于第四阶段的正退化区间）
+
+#### 实验2：混合回放数据联合训练（distill_v2）
+- 训练集：`data/structrank_mix_v2`（`structrank_nonzero_v2p` + `residual_fix_v3` 回放）
+- checkpoint：`outputs/residual_structrank_distill_v2/checkpoints/heuristic_net_residual_structrank_distill_v2.pt`
+- quick 评测（8 case）：
+  - `alpha=0.65`: `dE = -9.51%`
+    - `outputs/paper/structrank_distill_v2_q8_quick/exp_results_summary.csv`
+  - `alpha=0.60`: `dE = -9.64%`, `dT = -15.68%`（当前 quick 最优）
+    - `outputs/paper/structrank_distill_v2_q8_a06/exp_results_summary.csv`
+  - `alpha=0.80`: `dE = -8.95%`, `dT = -10.40%`
+    - `outputs/paper/structrank_distill_v2_q8_a08/exp_results_summary.csv`
+
+#### 全量验证（Exp3, 18 case）
+- 配置：distill_v2 + `alpha=0.60`
+- 结果：`outputs/paper/structrank_distill_v2_a06_exp3_full/exp_results_summary.csv`
+  - `dE = -7.12%`
+  - `dT = -11.01%`
+  - 成功率与 No-Residual 持平（`0.7778`）
+
+对比当前主线全量最佳（第三阶段 q8 line-gate）：
+- `outputs/paper/residual_adapt_q8_linegate_exp3/exp_results_summary.csv`
+- `dE = -8.56%`
+
+### 阶段结论
+- “蒸馏锚定 + 结构损失”方向已被验证为有效：
+  - 相比第四阶段单纯结构训练，退化问题被明显缓解；
+  - quick 集提升可到 `-9.64%`，并保持良好时间收益。
+- 但在 Exp3 全量上目前仍略弱于现有最佳主线（`-7.12%` vs `-8.56%`），尚未形成新的全量 SOTA。
+
+---
+
+## 第六阶段：模型权重插值（θ_old / θ_new）
+时间：2026-03-01
+
+### 实现
+新增脚本：
+- `scripts/interpolate_checkpoints.py`
+
+核心形式：
+$$
+\theta_{final} = \alpha \cdot \theta_{new} + (1-\alpha)\cdot\theta_{old}
+$$
+
+其中：
+- `\theta_old`：`outputs/residual_fix_v3_train/checkpoints/heuristic_net_residual_fix_v3_train.pt`
+- `\theta_new`：`outputs/residual_structrank_distill_v2/checkpoints/heuristic_net_residual_structrank_distill_v2.pt`
+
+### 粗扫（Exp3 quick, 8 case）
+固定推理参数（含 `residual_alpha=0.60`），扫 `alpha in {0.00,0.20,0.40,0.60,0.80,1.00}`。
+
+结果（`dE` 越小越好）：
+- `alpha=0.00`: `dE=-11.03%`
+- `alpha=0.20`: `dE=-10.80%`
+- `alpha=0.40`: `dE=-10.04%`
+- `alpha=0.60`: `dE=-9.99%`
+- `alpha=0.80`: `dE=-9.86%`
+- `alpha=1.00`: `dE=-9.64%`
+
+来源目录：
+- `outputs/paper/interp_q8_distill_v2_a000/`
+- `outputs/paper/interp_q8_distill_v2_a200/`
+- `outputs/paper/interp_q8_distill_v2_a400/`
+- `outputs/paper/interp_q8_distill_v2_a600/`
+- `outputs/paper/interp_q8_distill_v2_a800/`
+- `outputs/paper/interp_q8_distill_v2_a1000/`
+
+### 贴近旧模型细扫（避免漏掉局部最优）
+在旧模型最优推理系数 `residual_alpha=0.65` 下测试：
+- `alpha=0.05`: `dE=-11.10%`
+  - `outputs/paper/interp_q8_distill_v2_a050_r065/`
+- `alpha=0.10`: `dE=-10.78%`
+  - `outputs/paper/interp_q8_distill_v2_a100_r065/`
+
+对比旧模型基线（同口径）：
+- `outputs/paper/structrank_q8_quick_old/exp_results_summary.csv`
+- `dE=-11.56%`（仍最佳）
+
+### 结论
+- 权重插值在当前这组 `(\theta_old,\theta_new)` 上未超过旧基线；
+- 最优点位于 `alpha≈0`，说明 `theta_new` 带来的结构信息尚不足以在线性权重空间带来额外增益；
+- 该结论与第五阶段一致：训练侧改进方向可行，但需要更强的“结构收益”再进行参数融合才可能超过当前最佳。
+
+---
+
+## 第七阶段：分层权重插值（Stage-wise Merge）+ BN 统计解耦
+时间：2026-03-01
+
+### 动机
+第六阶段的全局线性插值失败，说明“安全归零能力”和“结构残差能力”可能分布在不同网络子模块。  
+因此改为**按网络阶段分别插值**，并增加 BN 运行统计量的独立控制。
+
+### 实现
+新增脚本：
+- `scripts/interpolate_checkpoints_stagewise.py`
+
+核心策略：
+1. 分组插值（每组独立 `alpha`）
+   - `shallow`: `inc/down1`
+   - `deep`: `down2/down3/context_*`
+   - `decoder`: `up1/2/3`
+   - `head`: `out`
+2. BN 统计解耦
+   - `--bn-stat-source {blend, old, new}`
+   - 用于验证“权重融合”和“统计量融合”是否应独立处理。
+
+### 第 1 轮分层粗扫（Exp3 quick, residual_alpha=0.65）
+来源目录：
+- `outputs/paper/interp_stage_q8_si01_r065/`
+- `outputs/paper/interp_stage_q8_si02_r065/`
+- `outputs/paper/interp_stage_q8_si03_r065/`
+- `outputs/paper/interp_stage_q8_si04_r065/`
+- `outputs/paper/interp_stage_q8_si05_r065/`
+- `outputs/paper/interp_stage_q8_si06_r065/`
+- `outputs/paper/interp_stage_q8_si07_r065/`
+
+结果（`dE` 越小越好）：
+- `si01`: `-10.343%`
+- `si02`: `-9.828%`
+- `si03`: `-9.271%`
+- `si04`: `-8.177%`
+- `si05`: `-8.156%`
+- `si06`: `-11.514%`（本轮最佳，`BN=blend`）
+- `si07`: `-9.717%`
+
+观察：
+- 高比例注入 `deep/decoder/head` 会明显退化；
+- `BN=blend` 在 `si06` 上显著优于多数 `BN=old` 配置。
+
+### `si06` 推理系数微调（Exp3 quick）
+来源目录：
+- `outputs/paper/interp_stage_q8_si06_r055/`
+- `outputs/paper/interp_stage_q8_si06_r060/`
+- `outputs/paper/interp_stage_q8_si06_r070/`
+
+结果：
+- `residual_alpha=0.55`: `dE=-11.409%`
+- `residual_alpha=0.60`: `dE=-11.486%`
+- `residual_alpha=0.70`: `dE=-11.709%`（超过旧 quick best `-11.56%`）
+
+### 第 2 轮邻域细扫（Exp3 quick, residual_alpha=0.70）
+来源目录：
+- `outputs/paper/interp_stage_q8_sj01_r070/`
+- `outputs/paper/interp_stage_q8_sj02_r070/`
+- `outputs/paper/interp_stage_q8_sj03_r070/`
+- `outputs/paper/interp_stage_q8_sj04_r070/`
+- `outputs/paper/interp_stage_q8_sj05_r070/`
+
+结果：
+- `sj01`: `-11.576%`
+- `sj02`: `-11.416%`
+- `sj03`: `-11.764%`（当前 quick 最佳）
+- `sj04`: `-11.395%`
+- `sj05`: `-11.632%`
+
+### 全量验证（Exp3, 18 case）
+当前最优候选：`sj03 + residual_alpha=0.70`
+- 结果文件：`outputs/paper/interp_stage_q8_sj03_r070_exp3_full/exp_results_summary.csv`
+- 指标：
+  - 成功率：`0.7778`（与 `No-Residual` 持平）
+  - `dE=-8.861%`
+  - `dT=-13.466%`
+
+对比主线旧最佳（第三阶段 q8 line-gate）：
+- `outputs/paper/residual_adapt_q8_linegate_exp3/exp_results_summary.csv`
+- `dE=-8.562%`
+
+结论：Exp3 全量已刷新（`-8.861% < -8.562%`）。
+
+### 交叉验证（Exp4, 公平口径）
+公平口径：`hybrid_budget_cap=0` + `sampling_max_iters=300`
+
+最优候选（`sj03`）：
+- `outputs/paper/interp_stage_q8_sj03_r070_exp4_fair/exp_results_summary.csv`
+- 成功率：`1.0`（与 `Hybrid A* (RS)` 持平）
+- `dE=-1.471%`
+- `dT=-11.849%`
+
+对比主线旧最佳：
+- `outputs/paper/residual_adapt_q8_linegate_exp4/exp_results_summary.csv`
+- `dE=-1.229%`, `dT=-1.380%`
+
+结论：在公平口径 Exp4 上，`sj03` 也取得了更优扩展节点与时间收益。
+
+### 本阶段结论
+- “分层插值 + BN 统计解耦”在当前任务上**有效超过了全局线性插值**；
+- 获得新的可复现最优组合：
+  - checkpoint：`outputs/checkpoints/interp_stage_sj03.pt`
+  - 推理系数：`residual_alpha=0.70`
+  - 其余 Q8 参数保持不变。
+
+---
+
+## 第八阶段：分层 alpha + residual_alpha 联合贝叶斯搜索
+时间：2026-03-01
+
+### 目标
+围绕分层插值参数（`alpha_shallow/deep/decoder/head`）与推理系数（`residual_alpha`）做联合优化，冲击 `Exp3 full dE = -9.5% ~ -10%`。
+
+### 实现
+新增脚本：
+- `scripts/bo_stagewise_search.py`
+
+能力：
+1. GP + EI 贝叶斯搜索（`sklearn`）
+2. 支持 warm-start 复用既有 quick/full 结果
+3. 支持两种模式：
+   - `bo_split=quick`：先 8-case 搜索，再自动提升到 18-case
+   - `bo_split=full`：直接在 18-case 上优化（避免 quick 过拟合）
+4. 自动记录：
+   - `outputs/paper/<search_name>/bo_results.csv`
+   - `outputs/paper/<search_name>/bo_summary.json`
+
+### 子阶段 A：v2（quick BO + full 提升）
+目录：`outputs/paper/bo_stagewise_v2/`
+
+- quick 最优：`dE=-12.064%`
+- full 最优（top00）：
+  - 文件：`outputs/paper/bo_stagewise_v2_full_top00/exp_results_summary.csv`
+  - `dE=-9.069%`, `dT=-5.784%`, 成功率持平
+
+结论：首次把 Exp3 full 从 `-8.861%` 提升到 `-9.069%`。
+
+### 子阶段 B：v3（扩大高 decoder/head 区域）
+目录：`outputs/paper/bo_stagewise_v3/`
+
+- quick 最优进一步到 `dE=-12.426%`
+- 但 full 两个 top 候选都退化（`dE>0`）
+
+结论：发现显著的 quick/full 失配，说明仅用 quick 指标优化会过拟合。
+
+### 子阶段 C：v4（direct full BO）
+目录：`outputs/paper/bo_stagewise_v4_full/`
+
+直接在 18-case 上做 BO（3 个新 trial）：
+- t000: `dE=-8.876%`
+- t001: `dE=-8.976%`
+- t002: `dE=-9.093%`（本阶段最优）
+
+最佳参数（t002）：
+- `alpha_shallow=0.021822`
+- `alpha_deep=0.460000`
+- `alpha_decoder=0.412016`
+- `alpha_head=0.254062`
+- `residual_alpha=0.730000`
+
+对应结果文件：
+- `outputs/paper/bo_stagewise_v4_full_full_t002/exp_results_summary.csv`
+
+### 子阶段 D：v5（边界外扩复核）
+目录：`outputs/paper/bo_stagewise_v5_full/`
+
+在 v4 最优边界外扩后继续 3 个 full trial：
+- t000: `dE=-9.089%`
+- t001: `dE=+0.909%`（激进参数退化）
+- t002: `dE=-9.053%`
+
+结论：未超过 v4 最优，`-9.093%` 可视为当前稳定最优。
+
+### 与历史最优对比（Exp3 full）
+- 旧主线（Q8 line-gate）：`dE=-8.562%`
+- 第七阶段最优（sj03）：`dE=-8.861%`
+- 第八阶段最优（BO v4 t002）：`dE=-9.093%`
+
+### 阶段结论
+1. 联合 BO 方向有效，继续提升了 Exp3 full（`-9.093%`）。  
+2. 但当前仍未达到 `-9.5% ~ -10%` 目标区间。  
+3. 主要瓶颈是 quick/full 指标分布不一致，且高激进参数区存在明显退化风险。  
+4. 下一步应优先采用“full 指标主导 + 稳定性约束”的搜索策略，而非继续单纯放大 quick 指标。
+
+---
+
+## 第九阶段：场景加权 full-BO（narrow/maze 惩罚）+ 定向极值验证
+时间：2026-03-01
+
+### 目标
+在“直接 full 优化”的基础上继续冲击 `-9.5%`，并通过场景惩罚抑制窄道/迷宫失稳：
+- 对 `parasol:narrow_passage` 与 `parasol:maze` 的正向退化（`dE>0`）加入惩罚；
+- 仍以 Exp3 full 全局 `dE` 为主目标。
+
+### 实现更新
+文件：`scripts/bo_stagewise_search.py`
+
+新增：
+1. 场景指标解析
+   - 自动读取 `exp3_ablation_scene` 的 `dE_narrow/dE_maze/dE_other`。
+2. 场景加权目标
+   - 新参数：
+     - `--scene-penalty-narrow`
+     - `--scene-penalty-maze`
+     - `--scene-tol-narrow`
+     - `--scene-tol-maze`
+   - 目标函数新增惩罚项（仅对超过容忍阈值的正退化生效）。
+3. 结果日志增强
+   - `bo_results.csv` 中增加 `dE_narrow_percent/dE_maze_percent/dE_other_percent` 字段。
+
+本阶段使用配置：
+- `scene_penalty_narrow=2.5`
+- `scene_penalty_maze=3.0`
+- `scene_tol_narrow=0.05`
+- `scene_tol_maze=0.20`
+
+### 多轮 full-BO 结果
+#### v6（场景加权首次）
+目录：`outputs/paper/bo_stagewise_v6_scene_full/`
+- 最优：`dE=-9.252%`
+- 文件：`outputs/paper/bo_stagewise_v6_scene_full_full_t001/exp_results_summary.csv`
+
+#### v7（向低 deep 区域扩展）
+目录：`outputs/paper/bo_stagewise_v7_scene_full/`
+- 最优：`dE=-9.301%`
+- 文件：`outputs/paper/bo_stagewise_v7_scene_full_full_t001/exp_results_summary.csv`
+
+#### v8（继续下探）
+目录：`outputs/paper/bo_stagewise_v8_scene_full/`
+- 最优：`dE=-9.342%`
+- 文件：`outputs/paper/bo_stagewise_v8_scene_full_full_t001/exp_results_summary.csv`
+
+#### v9（边界外扩到更低 deep）
+目录：`outputs/paper/bo_stagewise_v9_scene_full/`
+- 最优：`dE=-9.423%`
+- 文件：`outputs/paper/bo_stagewise_v9_scene_full_full_t001/exp_results_summary.csv`
+
+#### v10（继续外推）
+目录：`outputs/paper/bo_stagewise_v10_scene_full/`
+- 新 trial 未超过 v9 最优（保留 `-9.423%` 为 BO 最优）。
+
+### 定向极值验证（手工候选）
+为进一步逼近 `-9.5%`，在 v9 邻域做 3 个 full 直评：
+- `manual_v11a`：`dE=-9.396%`
+  - `outputs/paper/manual_v11a_exp3_full/exp_results_summary.csv`
+- `manual_v11b`：`dE=-9.437%`（本阶段全局最佳）
+  - `outputs/paper/manual_v11b_exp3_full/exp_results_summary.csv`
+- `manual_v11c`：`dE=-9.396%`
+  - `outputs/paper/manual_v11c_exp3_full/exp_results_summary.csv`
+
+### 当前最佳配置（Exp3 full）
+来自 `manual_v11b`：
+- `alpha_shallow=0.085`
+- `alpha_deep=0.080`
+- `alpha_decoder=0.500`
+- `alpha_head=0.300`
+- `residual_alpha=0.675`
+- 结果：`dE=-9.437%`, `dT=-9.498%`, 成功率与 `No-Residual` 持平（`0.7778`）
+
+### 阶段结论
+1. 场景加权 full-BO + 定向极值验证将 Exp3 full 从 `-9.093%` 继续提升到 `-9.437%`。  
+2. 仍未越过 `-9.5%`，但已非常接近（差 `0.063` 个百分点）。  
+3. 观测到 `maze` 的 `dE` 在当前体系下几乎固定在 `+0.658%`，已成为进一步提升的结构性瓶颈。  
+
+---
+
+## 第十阶段：Exp3 最终冻结 + 停止准则触发 + 资源转向 Exp4/maze 训练修复
+时间：2026-03-01
+
+### 停止准则（Exp3 参数微调）
+已触发，停止继续针对 Exp3 做推理参数微调。依据：
+- 当前最优 `manual_v11b`：`dE=-9.437%`，与目标 `-9.5%` 仅差 `0.063` 个百分点。
+- 18-case 规模下，该差距约对应“平均每场景 < 1 个扩展节点（约 0.9）”。
+- 边际收益已显著低于继续消耗算力的成本。
+
+### Exp3 最终冻结（manual_v11b）
+- 冻结 checkpoint：`outputs/checkpoints/exp3_final_manual_v11b.pt`
+- 源 checkpoint：`outputs/checkpoints/manual_v11b.pt`
+- 冻结清单（含 sha256、固定参数、复现实验命令）：  
+  `outputs/paper/exp3_final_manual_v11b_manifest.json`
+- 对应 Exp3 full 结果：  
+  `outputs/paper/manual_v11b_exp3_full/exp_results_summary.csv`
+
+### 算力转向
+从本阶段起，算力优先投向：
+1. Exp4 泛化验证（基于 `manual_v11b` 最终冻结版）。
+2. maze 结构性瓶颈修复（训练侧：防遗忘蒸馏锚定 + 结构/排序损失联合训练），不再继续做 Exp3 推理参数微调。

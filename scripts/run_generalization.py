@@ -145,6 +145,168 @@ def parse_args() -> argparse.Namespace:
         help="Margin used by hard ranking hinge loss (normalized residual units).",
     )
     p.add_argument(
+        "--local-rank-lambda",
+        type=float,
+        default=0.0,
+        help="Weight for local edge-wise ordinal ranking consistency loss.",
+    )
+    p.add_argument(
+        "--local-rank-margin",
+        type=float,
+        default=0.01,
+        help="Margin used by local ordinal ranking hinge loss.",
+    )
+    p.add_argument(
+        "--local-rank-delta-threshold",
+        type=float,
+        default=0.005,
+        help="Minimum teacher edge delta to participate in local ranking loss.",
+    )
+    p.add_argument(
+        "--local-rank-weight-power",
+        type=float,
+        default=1.0,
+        help="Edge-delta reweighting power for local ranking loss.",
+    )
+    p.add_argument(
+        "--grad-dir-lambda",
+        type=float,
+        default=0.0,
+        help="Weight for gradient-direction consistency loss.",
+    )
+    p.add_argument(
+        "--grad-dir-min-mag",
+        type=float,
+        default=0.01,
+        help="Minimum teacher gradient magnitude for direction-consistency supervision.",
+    )
+    p.add_argument(
+        "--local-prob-rank-lambda",
+        type=float,
+        default=0.0,
+        help="Weight for confidence-gated local soft ranking loss.",
+    )
+    p.add_argument(
+        "--local-prob-rank-tau",
+        type=float,
+        default=0.02,
+        help="Temperature for local soft ranking probability targets.",
+    )
+    p.add_argument(
+        "--local-prob-rank-delta-threshold",
+        type=float,
+        default=0.003,
+        help="Teacher edge-delta confidence threshold for local soft ranking.",
+    )
+    p.add_argument(
+        "--local-prob-rank-focus-quantile",
+        type=float,
+        default=0.7,
+        help="Focus local soft ranking on teacher mid-value edges above this quantile.",
+    )
+    p.add_argument(
+        "--local-prob-rank-weight-power",
+        type=float,
+        default=1.0,
+        help="Confidence reweighting power for local soft ranking loss.",
+    )
+    p.add_argument(
+        "--local-prob-rank-hard-only",
+        action="store_true",
+        default=False,
+        help="Apply local soft ranking only on hard samples.",
+    )
+    p.add_argument(
+        "--local-prob-rank-narrow-boost",
+        type=float,
+        default=0.0,
+        help="Additional weight multiplier on narrow-corridor edges for local soft ranking.",
+    )
+    p.add_argument(
+        "--global-rank-lambda",
+        type=float,
+        default=0.0,
+        help="Weight for global quantile contrastive ranking loss.",
+    )
+    p.add_argument(
+        "--global-rank-pairs",
+        type=int,
+        default=96,
+        help="Max number of high-vs-low quantile pairs used by global rank loss.",
+    )
+    p.add_argument(
+        "--global-rank-tau",
+        type=float,
+        default=0.04,
+        help="Temperature for global contrastive ranking logits.",
+    )
+    p.add_argument(
+        "--global-rank-top-quantile",
+        type=float,
+        default=0.85,
+        help="Top teacher quantile used to define global high-residual set.",
+    )
+    p.add_argument(
+        "--global-rank-bottom-quantile",
+        type=float,
+        default=0.25,
+        help="Bottom teacher quantile used to define global low-residual set.",
+    )
+    p.add_argument(
+        "--global-rank-hard-only",
+        action="store_true",
+        default=False,
+        help="Apply global contrastive ranking only on hard samples.",
+    )
+    p.add_argument(
+        "--global-rank-narrow-boost",
+        type=float,
+        default=0.0,
+        help="Additional weight multiplier for global pairs touching narrow regions.",
+    )
+    p.add_argument(
+        "--distill-anchor-checkpoint",
+        type=Path,
+        default=None,
+        help="Anchor checkpoint for anti-forgetting distillation. Empty disables distillation.",
+    )
+    p.add_argument(
+        "--distill-lambda",
+        type=float,
+        default=0.0,
+        help="Weight for anchor distillation SmoothL1 loss.",
+    )
+    p.add_argument(
+        "--distill-huber-delta",
+        type=float,
+        default=0.02,
+        help="SmoothL1 beta for distillation loss.",
+    )
+    p.add_argument(
+        "--distill-focus-quantile",
+        type=float,
+        default=0.0,
+        help="When >0, distill only anchor cells above this quantile.",
+    )
+    p.add_argument(
+        "--distill-hard-only",
+        action="store_true",
+        default=False,
+        help="Apply distillation only on hard samples.",
+    )
+    p.add_argument(
+        "--distill-narrow-boost",
+        type=float,
+        default=0.0,
+        help="Additional narrow-corridor multiplier for distillation loss.",
+    )
+    p.add_argument(
+        "--distill-under-lambda",
+        type=float,
+        default=0.0,
+        help="Extra one-sided penalty when student falls below anchor residual.",
+    )
+    p.add_argument(
         "--model-name",
         type=str,
         default="smallunet",
@@ -314,6 +476,7 @@ def _build_model_and_loaders(args: argparse.Namespace, cfg):
 
 def _eval_loss(
     model: torch.nn.Module,
+    anchor_model: torch.nn.Module | None,
     loader: DataLoader,
     device: torch.device,
     under_weight: float,
@@ -326,6 +489,32 @@ def _eval_loss(
     hard_rank_margin: float,
     gradient_struct_lambda: float,
     laplacian_struct_lambda: float,
+    local_rank_lambda: float,
+    local_rank_margin: float,
+    local_rank_delta_threshold: float,
+    local_rank_weight_power: float,
+    grad_dir_lambda: float,
+    grad_dir_min_mag: float,
+    local_prob_rank_lambda: float,
+    local_prob_rank_tau: float,
+    local_prob_rank_delta_threshold: float,
+    local_prob_rank_focus_quantile: float,
+    local_prob_rank_weight_power: float,
+    local_prob_rank_hard_only: bool,
+    local_prob_rank_narrow_boost: float,
+    global_rank_lambda: float,
+    global_rank_pairs: int,
+    global_rank_tau: float,
+    global_rank_top_quantile: float,
+    global_rank_bottom_quantile: float,
+    global_rank_hard_only: bool,
+    global_rank_narrow_boost: float,
+    distill_lambda: float,
+    distill_huber_delta: float,
+    distill_focus_quantile: float,
+    distill_hard_only: bool,
+    distill_narrow_boost: float,
+    distill_under_lambda: float,
 ) -> float:
     model.eval()
     total = 0.0
@@ -351,6 +540,11 @@ def _eval_loss(
             t_steps = int(batch.get("temporal_steps", torch.tensor([1]))[0].item())
             yaw_bins = int(batch.get("yaw_bins", torch.tensor([y.shape[1]]))[0].item())
             pred = model(x)
+            anchor_pred = None
+            if anchor_model is not None and (
+                float(distill_lambda) > 0.0 or float(distill_under_lambda) > 0.0
+            ):
+                anchor_pred = anchor_model(x)
             loss = _masked_loss(
                 pred,
                 y,
@@ -372,6 +566,33 @@ def _eval_loss(
                 hard_rank_margin=hard_rank_margin,
                 gradient_struct_lambda=gradient_struct_lambda,
                 laplacian_struct_lambda=laplacian_struct_lambda,
+                local_rank_lambda=local_rank_lambda,
+                local_rank_margin=local_rank_margin,
+                local_rank_delta_threshold=local_rank_delta_threshold,
+                local_rank_weight_power=local_rank_weight_power,
+                grad_dir_lambda=grad_dir_lambda,
+                grad_dir_min_mag=grad_dir_min_mag,
+                local_prob_rank_lambda=local_prob_rank_lambda,
+                local_prob_rank_tau=local_prob_rank_tau,
+                local_prob_rank_delta_threshold=local_prob_rank_delta_threshold,
+                local_prob_rank_focus_quantile=local_prob_rank_focus_quantile,
+                local_prob_rank_weight_power=local_prob_rank_weight_power,
+                local_prob_rank_hard_only=local_prob_rank_hard_only,
+                local_prob_rank_narrow_boost=local_prob_rank_narrow_boost,
+                global_rank_lambda=global_rank_lambda,
+                global_rank_pairs=global_rank_pairs,
+                global_rank_tau=global_rank_tau,
+                global_rank_top_quantile=global_rank_top_quantile,
+                global_rank_bottom_quantile=global_rank_bottom_quantile,
+                global_rank_hard_only=global_rank_hard_only,
+                global_rank_narrow_boost=global_rank_narrow_boost,
+                distill_target=anchor_pred,
+                distill_lambda=distill_lambda,
+                distill_huber_delta=distill_huber_delta,
+                distill_focus_quantile=distill_focus_quantile,
+                distill_hard_only=distill_hard_only,
+                distill_narrow_boost=distill_narrow_boost,
+                distill_under_lambda=distill_under_lambda,
             )
             total += float(loss.item())
             n += 1
@@ -1207,6 +1428,32 @@ def main() -> None:
     cfg.train.hard_rank_lambda = float(args.hard_rank_lambda)  # type: ignore[attr-defined]
     cfg.train.hard_rank_topk = int(args.hard_rank_topk)  # type: ignore[attr-defined]
     cfg.train.hard_rank_margin = float(args.hard_rank_margin)  # type: ignore[attr-defined]
+    cfg.train.local_rank_lambda = float(args.local_rank_lambda)  # type: ignore[attr-defined]
+    cfg.train.local_rank_margin = float(args.local_rank_margin)  # type: ignore[attr-defined]
+    cfg.train.local_rank_delta_threshold = float(args.local_rank_delta_threshold)  # type: ignore[attr-defined]
+    cfg.train.local_rank_weight_power = float(args.local_rank_weight_power)  # type: ignore[attr-defined]
+    cfg.train.grad_dir_lambda = float(args.grad_dir_lambda)  # type: ignore[attr-defined]
+    cfg.train.grad_dir_min_mag = float(args.grad_dir_min_mag)  # type: ignore[attr-defined]
+    cfg.train.local_prob_rank_lambda = float(args.local_prob_rank_lambda)  # type: ignore[attr-defined]
+    cfg.train.local_prob_rank_tau = float(args.local_prob_rank_tau)  # type: ignore[attr-defined]
+    cfg.train.local_prob_rank_delta_threshold = float(args.local_prob_rank_delta_threshold)  # type: ignore[attr-defined]
+    cfg.train.local_prob_rank_focus_quantile = float(args.local_prob_rank_focus_quantile)  # type: ignore[attr-defined]
+    cfg.train.local_prob_rank_weight_power = float(args.local_prob_rank_weight_power)  # type: ignore[attr-defined]
+    cfg.train.local_prob_rank_hard_only = bool(args.local_prob_rank_hard_only)  # type: ignore[attr-defined]
+    cfg.train.local_prob_rank_narrow_boost = float(args.local_prob_rank_narrow_boost)  # type: ignore[attr-defined]
+    cfg.train.global_rank_lambda = float(args.global_rank_lambda)  # type: ignore[attr-defined]
+    cfg.train.global_rank_pairs = int(args.global_rank_pairs)  # type: ignore[attr-defined]
+    cfg.train.global_rank_tau = float(args.global_rank_tau)  # type: ignore[attr-defined]
+    cfg.train.global_rank_top_quantile = float(args.global_rank_top_quantile)  # type: ignore[attr-defined]
+    cfg.train.global_rank_bottom_quantile = float(args.global_rank_bottom_quantile)  # type: ignore[attr-defined]
+    cfg.train.global_rank_hard_only = bool(args.global_rank_hard_only)  # type: ignore[attr-defined]
+    cfg.train.global_rank_narrow_boost = float(args.global_rank_narrow_boost)  # type: ignore[attr-defined]
+    cfg.train.distill_lambda = float(args.distill_lambda)  # type: ignore[attr-defined]
+    cfg.train.distill_huber_delta = float(args.distill_huber_delta)  # type: ignore[attr-defined]
+    cfg.train.distill_focus_quantile = float(args.distill_focus_quantile)  # type: ignore[attr-defined]
+    cfg.train.distill_hard_only = bool(args.distill_hard_only)  # type: ignore[attr-defined]
+    cfg.train.distill_narrow_boost = float(args.distill_narrow_boost)  # type: ignore[attr-defined]
+    cfg.train.distill_under_lambda = float(args.distill_under_lambda)  # type: ignore[attr-defined]
     cfg.train.distance_weight_scale_m = float(args.dist_weight_scale)
     cfg.train.distance_weight_min = float(args.dist_weight_min)
     cfg.train.type_c_loss_weight = float(args.type_c_weight)
@@ -1283,6 +1530,26 @@ def main() -> None:
     device = torch.device(cfg.train.device)
     model = model.to(device)
     _load_init_checkpoint(model, args.init_checkpoint)
+    anchor_model: torch.nn.Module | None = None
+    if args.distill_anchor_checkpoint is not None:
+        ckpt = Path(args.distill_anchor_checkpoint)
+        if ckpt.exists() and (
+            float(args.distill_lambda) > 0.0 or float(args.distill_under_lambda) > 0.0
+        ):
+            anchor_model = build_model(
+                model_name=str(args.model_name),
+                in_channels=in_channels,
+                out_channels=out_channels,
+                base=int(args.model_base),
+                output_activation=output_activation,
+            ).to(device)
+            _load_init_checkpoint(anchor_model, ckpt)
+            anchor_model.eval()
+            for p in anchor_model.parameters():
+                p.requires_grad_(False)
+            print(f"[distill] anchor loaded: {ckpt}")
+        elif not ckpt.exists():
+            print(f"[distill] anchor checkpoint missing, distillation disabled: {ckpt}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.learning_rate, weight_decay=cfg.train.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -1341,6 +1608,12 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
                 pred = model(x)
+                anchor_pred = None
+                if anchor_model is not None and (
+                    float(args.distill_lambda) > 0.0 or float(args.distill_under_lambda) > 0.0
+                ):
+                    with torch.no_grad():
+                        anchor_pred = anchor_model(x)
                 loss = _masked_loss(
                     pred,
                     y,
@@ -1362,6 +1635,33 @@ def main() -> None:
                     hard_rank_margin=float(args.hard_rank_margin),
                     gradient_struct_lambda=float(args.gradient_struct_lambda),
                     laplacian_struct_lambda=float(args.laplacian_struct_lambda),
+                    local_rank_lambda=float(args.local_rank_lambda),
+                    local_rank_margin=float(args.local_rank_margin),
+                    local_rank_delta_threshold=float(args.local_rank_delta_threshold),
+                    local_rank_weight_power=float(args.local_rank_weight_power),
+                    grad_dir_lambda=float(args.grad_dir_lambda),
+                    grad_dir_min_mag=float(args.grad_dir_min_mag),
+                    local_prob_rank_lambda=float(args.local_prob_rank_lambda),
+                    local_prob_rank_tau=float(args.local_prob_rank_tau),
+                    local_prob_rank_delta_threshold=float(args.local_prob_rank_delta_threshold),
+                    local_prob_rank_focus_quantile=float(args.local_prob_rank_focus_quantile),
+                    local_prob_rank_weight_power=float(args.local_prob_rank_weight_power),
+                    local_prob_rank_hard_only=bool(args.local_prob_rank_hard_only),
+                    local_prob_rank_narrow_boost=float(args.local_prob_rank_narrow_boost),
+                    global_rank_lambda=float(args.global_rank_lambda),
+                    global_rank_pairs=int(args.global_rank_pairs),
+                    global_rank_tau=float(args.global_rank_tau),
+                    global_rank_top_quantile=float(args.global_rank_top_quantile),
+                    global_rank_bottom_quantile=float(args.global_rank_bottom_quantile),
+                    global_rank_hard_only=bool(args.global_rank_hard_only),
+                    global_rank_narrow_boost=float(args.global_rank_narrow_boost),
+                    distill_target=anchor_pred,
+                    distill_lambda=float(args.distill_lambda),
+                    distill_huber_delta=float(args.distill_huber_delta),
+                    distill_focus_quantile=float(args.distill_focus_quantile),
+                    distill_hard_only=bool(args.distill_hard_only),
+                    distill_narrow_boost=float(args.distill_narrow_boost),
+                    distill_under_lambda=float(args.distill_under_lambda),
                 )
 
             scaler.scale(loss).backward()
@@ -1376,6 +1676,7 @@ def main() -> None:
         train_loss = epoch_loss / max(steps, 1)
         val_loss = _eval_loss(
             model,
+            anchor_model,
             val_loader,
             device=device,
             under_weight=cfg.train.underestimation_weight,
@@ -1388,6 +1689,32 @@ def main() -> None:
             hard_rank_margin=float(args.hard_rank_margin),
             gradient_struct_lambda=float(args.gradient_struct_lambda),
             laplacian_struct_lambda=float(args.laplacian_struct_lambda),
+            local_rank_lambda=float(args.local_rank_lambda),
+            local_rank_margin=float(args.local_rank_margin),
+            local_rank_delta_threshold=float(args.local_rank_delta_threshold),
+            local_rank_weight_power=float(args.local_rank_weight_power),
+            grad_dir_lambda=float(args.grad_dir_lambda),
+            grad_dir_min_mag=float(args.grad_dir_min_mag),
+            local_prob_rank_lambda=float(args.local_prob_rank_lambda),
+            local_prob_rank_tau=float(args.local_prob_rank_tau),
+            local_prob_rank_delta_threshold=float(args.local_prob_rank_delta_threshold),
+            local_prob_rank_focus_quantile=float(args.local_prob_rank_focus_quantile),
+            local_prob_rank_weight_power=float(args.local_prob_rank_weight_power),
+            local_prob_rank_hard_only=bool(args.local_prob_rank_hard_only),
+            local_prob_rank_narrow_boost=float(args.local_prob_rank_narrow_boost),
+            global_rank_lambda=float(args.global_rank_lambda),
+            global_rank_pairs=int(args.global_rank_pairs),
+            global_rank_tau=float(args.global_rank_tau),
+            global_rank_top_quantile=float(args.global_rank_top_quantile),
+            global_rank_bottom_quantile=float(args.global_rank_bottom_quantile),
+            global_rank_hard_only=bool(args.global_rank_hard_only),
+            global_rank_narrow_boost=float(args.global_rank_narrow_boost),
+            distill_lambda=float(args.distill_lambda),
+            distill_huber_delta=float(args.distill_huber_delta),
+            distill_focus_quantile=float(args.distill_focus_quantile),
+            distill_hard_only=bool(args.distill_hard_only),
+            distill_narrow_boost=float(args.distill_narrow_boost),
+            distill_under_lambda=float(args.distill_under_lambda),
         )
         scheduler.step(val_loss)
         current_lr = float(optimizer.param_groups[0]["lr"])

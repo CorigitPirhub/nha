@@ -1,0 +1,13 @@
+{
+  "vehicle_wheel_base": 2.349093338961132,
+  "vehicle_track_width": 1.0854498161201733,
+  "vehicle_length": 4.241004415482437,
+  "vehicle_width": 1.6703981971729527,
+  "vehicle_max_steer_deg": 40.93853366372859,
+  "vehicle_min_turn_radius": 2.7081850297864194,
+  "vehicle_load_factor": 1.35,
+  "vehicle_load_class": "heavy",
+  "vehicle_battery": 74.40836401217194,
+  "vehicle_max_speed_scale": 0.7176203872796691,
+  "vehicle_steer_rate_scale": 0.7675371462249525
+}

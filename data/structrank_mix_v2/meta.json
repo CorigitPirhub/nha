@@ -1,0 +1,32 @@
+{
+  "seed": 23,
+  "splits": {
+    "train": {
+      "split": "train",
+      "teacher_mode": "mixed",
+      "teacher_yaw_bins": 8,
+      "teacher_rs_backend": "approx",
+      "teacher_rs_step_size": 1.0,
+      "hybrid_obstacle_alpha": 0.2,
+      "hybrid_obstacle_threshold_m": 1.8
+    },
+    "val": {
+      "split": "val",
+      "teacher_mode": "mixed",
+      "teacher_yaw_bins": 8,
+      "teacher_rs_backend": "approx",
+      "teacher_rs_step_size": 1.0,
+      "hybrid_obstacle_alpha": 0.2,
+      "hybrid_obstacle_threshold_m": 1.8
+    },
+    "test": {
+      "split": "test",
+      "teacher_mode": "mixed",
+      "teacher_yaw_bins": 8,
+      "teacher_rs_backend": "approx",
+      "teacher_rs_step_size": 1.0,
+      "hybrid_obstacle_alpha": 0.2,
+      "hybrid_obstacle_threshold_m": 1.8
+    }
+  }
+}

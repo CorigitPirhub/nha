@@ -35,6 +35,33 @@ def _masked_loss(
     hard_rank_margin: float = 0.01,
     gradient_struct_lambda: float = 0.0,
     laplacian_struct_lambda: float = 0.0,
+    local_rank_lambda: float = 0.0,
+    local_rank_margin: float = 0.01,
+    local_rank_delta_threshold: float = 0.005,
+    local_rank_weight_power: float = 1.0,
+    grad_dir_lambda: float = 0.0,
+    grad_dir_min_mag: float = 0.01,
+    local_prob_rank_lambda: float = 0.0,
+    local_prob_rank_tau: float = 0.02,
+    local_prob_rank_delta_threshold: float = 0.003,
+    local_prob_rank_focus_quantile: float = 0.7,
+    local_prob_rank_weight_power: float = 1.0,
+    local_prob_rank_hard_only: bool = True,
+    local_prob_rank_narrow_boost: float = 0.0,
+    global_rank_lambda: float = 0.0,
+    global_rank_pairs: int = 96,
+    global_rank_tau: float = 0.04,
+    global_rank_top_quantile: float = 0.85,
+    global_rank_bottom_quantile: float = 0.25,
+    global_rank_hard_only: bool = True,
+    global_rank_narrow_boost: float = 0.0,
+    distill_target: torch.Tensor | None = None,
+    distill_lambda: float = 0.0,
+    distill_huber_delta: float = 0.02,
+    distill_focus_quantile: float = 0.0,
+    distill_hard_only: bool = False,
+    distill_narrow_boost: float = 0.0,
+    distill_under_lambda: float = 0.0,
 ) -> torch.Tensor:
     err = pred - target
     sq = err**2
@@ -157,6 +184,280 @@ def _masked_loss(
         lap_loss = (torch.abs(pl - tl) * ml).sum() / ml.sum().clamp_min(1.0)
         total_loss = total_loss + float(laplacian_struct_lambda) * lap_loss
 
+    # Local ordinal structure: preserve teacher ordering between adjacent cells.
+    if float(local_rank_lambda) > 0.0:
+        rank_margin = float(max(local_rank_margin, 0.0))
+        delta_thr = float(max(local_rank_delta_threshold, 0.0))
+        w_pow = float(max(local_rank_weight_power, 0.0))
+
+        def _edge_rank_loss(
+            p_d: torch.Tensor,
+            t_d: torch.Tensor,
+            m_d: torch.Tensor,
+        ) -> torch.Tensor:
+            abs_t = torch.abs(t_d)
+            sel = (abs_t >= delta_thr).to(pred.dtype) * m_d
+            if sel.sum() <= 0.0:
+                return pred.new_tensor(0.0)
+            rank_err = torch.relu(rank_margin - torch.sign(t_d) * p_d)
+            if w_pow > 0.0:
+                rank_w = torch.pow(torch.clamp(abs_t, min=max(delta_thr, 1e-3)), w_pow)
+            else:
+                rank_w = torch.ones_like(abs_t, dtype=pred.dtype)
+            ww = sel * rank_w
+            return (rank_err * ww).sum() / ww.sum().clamp_min(1.0)
+
+        pdx = pred[..., 1:] - pred[..., :-1]
+        tdx = target[..., 1:] - target[..., :-1]
+        mdx = (mask[..., 1:] * mask[..., :-1]).to(pred.dtype)
+        if sample_weight is not None:
+            mdx = mdx * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
+        if standard_mask is not None:
+            mdx = mdx * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
+        rank_x = _edge_rank_loss(pdx, tdx, mdx)
+
+        pdy = pred[..., 1:, :] - pred[..., :-1, :]
+        tdy = target[..., 1:, :] - target[..., :-1, :]
+        mdy = (mask[..., 1:, :] * mask[..., :-1, :]).to(pred.dtype)
+        if sample_weight is not None:
+            mdy = mdy * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
+        if standard_mask is not None:
+            mdy = mdy * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
+        rank_y = _edge_rank_loss(pdy, tdy, mdy)
+
+        total_loss = total_loss + float(local_rank_lambda) * (rank_x + rank_y)
+
+    # Gradient direction consistency: match structural flow orientation.
+    if float(grad_dir_lambda) > 0.0:
+        eps = 1e-6
+        pdx = pred[..., :-1, 1:] - pred[..., :-1, :-1]
+        pdy = pred[..., 1:, :-1] - pred[..., :-1, :-1]
+        tdx = target[..., :-1, 1:] - target[..., :-1, :-1]
+        tdy = target[..., 1:, :-1] - target[..., :-1, :-1]
+
+        gm = (
+            mask[..., :-1, :-1] * mask[..., :-1, 1:] * mask[..., 1:, :-1]
+        ).to(pred.dtype)
+        if sample_weight is not None:
+            gm = gm * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
+        if standard_mask is not None:
+            gm = gm * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
+
+        t_norm = torch.sqrt(tdx * tdx + tdy * tdy + eps)
+        p_norm = torch.sqrt(pdx * pdx + pdy * pdy + eps)
+        valid = gm * (t_norm >= float(max(grad_dir_min_mag, 0.0))).to(pred.dtype)
+        if valid.sum() > 0.0:
+            cos = (pdx * tdx + pdy * tdy) / (p_norm * t_norm + eps)
+            cos = torch.clamp(cos, -1.0, 1.0)
+            dir_loss = ((1.0 - cos) * valid).sum() / valid.sum().clamp_min(1.0)
+            total_loss = total_loss + float(grad_dir_lambda) * dir_loss
+
+    # Confidence-gated local soft ranking:
+    # replaces hard-margin ordinal constraints with probabilistic order supervision.
+    if float(local_prob_rank_lambda) > 0.0:
+        tau = float(max(local_prob_rank_tau, 1e-4))
+        delta_thr = float(max(local_prob_rank_delta_threshold, 0.0))
+        focus_q = float(np.clip(local_prob_rank_focus_quantile, 0.0, 1.0))
+        w_pow = float(max(local_prob_rank_weight_power, 0.0))
+        hard_only = bool(local_prob_rank_hard_only)
+        narrow_boost = float(max(local_prob_rank_narrow_boost, 0.0))
+
+        nm = None
+        if narrow_mask is not None:
+            nm = narrow_mask.to(pred.dtype)
+            if nm.ndim == 3:
+                nm = nm.unsqueeze(1)
+            if nm.shape[1] == 1 and pred.shape[1] != 1:
+                nm = nm.expand(-1, pred.shape[1], -1, -1)
+
+        hm = hard_mask.to(pred.dtype).view(-1, 1, 1, 1) if hard_mask is not None else None
+
+        def _soft_local_rank_loss(
+            p_d: torch.Tensor,
+            t_d: torch.Tensor,
+            m_d: torch.Tensor,
+            t_mid: torch.Tensor,
+            n_d: torch.Tensor | None,
+        ) -> torch.Tensor:
+            ww = m_d
+            if hard_only and hm is not None:
+                ww = ww * hm
+
+            abs_t = torch.abs(t_d)
+            conf = torch.relu(abs_t - delta_thr)
+            conf = conf / (conf + float(max(delta_thr, 1e-3)))
+            if w_pow != 1.0:
+                conf = torch.pow(conf, w_pow)
+            ww = ww * conf
+
+            if focus_q > 0.0:
+                focused = torch.zeros_like(ww)
+                for bi in range(ww.shape[0]):
+                    vb = ww[bi] > 0.0
+                    if int(vb.sum().item()) < 16:
+                        focused[bi] = ww[bi]
+                        continue
+                    qv = torch.quantile(t_mid[bi][vb].float(), focus_q)
+                    focused[bi] = ww[bi] * (t_mid[bi] >= qv.to(t_mid.dtype)).to(pred.dtype)
+                ww = focused
+
+            if n_d is not None and narrow_boost > 0.0:
+                ww = ww * (1.0 + narrow_boost * n_d)
+
+            den = ww.sum().clamp_min(1.0)
+            if float(den.item()) <= 1.0:
+                return pred.new_tensor(0.0)
+
+            target_prob = torch.sigmoid(t_d / tau).detach()
+            pred_logit = p_d / tau
+            bce = torch.nn.functional.binary_cross_entropy_with_logits(pred_logit, target_prob, reduction="none")
+            return (bce * ww).sum() / den
+
+        pdx = pred[..., 1:] - pred[..., :-1]
+        tdx = target[..., 1:] - target[..., :-1]
+        mdx = (mask[..., 1:] * mask[..., :-1]).to(pred.dtype)
+        tmx = 0.5 * (target[..., 1:] + target[..., :-1])
+        ndx = (nm[..., 1:] * nm[..., :-1]).to(pred.dtype) if nm is not None else None
+        if sample_weight is not None:
+            mdx = mdx * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
+        if standard_mask is not None:
+            mdx = mdx * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
+        loss_x = _soft_local_rank_loss(pdx, tdx, mdx, tmx, ndx)
+
+        pdy = pred[..., 1:, :] - pred[..., :-1, :]
+        tdy = target[..., 1:, :] - target[..., :-1, :]
+        mdy = (mask[..., 1:, :] * mask[..., :-1, :]).to(pred.dtype)
+        tmy = 0.5 * (target[..., 1:, :] + target[..., :-1, :])
+        ndy = (nm[..., 1:, :] * nm[..., :-1, :]).to(pred.dtype) if nm is not None else None
+        if sample_weight is not None:
+            mdy = mdy * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
+        if standard_mask is not None:
+            mdy = mdy * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
+        loss_y = _soft_local_rank_loss(pdy, tdy, mdy, tmy, ndy)
+
+        total_loss = total_loss + float(local_prob_rank_lambda) * (loss_x + loss_y)
+
+    # Global quantile contrastive ranking:
+    # enforce high-residual regions to remain above low-residual regions at map scale.
+    if float(global_rank_lambda) > 0.0:
+        tau_g = float(max(global_rank_tau, 1e-4))
+        top_q = float(np.clip(global_rank_top_quantile, 0.05, 0.99))
+        bot_q = float(np.clip(global_rank_bottom_quantile, 0.0, top_q - 1e-3))
+        pair_cap = int(max(global_rank_pairs, 4))
+        hard_only = bool(global_rank_hard_only)
+        narrow_boost = float(max(global_rank_narrow_boost, 0.0))
+
+        nm = None
+        if narrow_mask is not None and narrow_boost > 0.0:
+            nm = narrow_mask.to(pred.dtype)
+            if nm.ndim == 3:
+                nm = nm.unsqueeze(1)
+            if nm.shape[1] == 1 and pred.shape[1] != 1:
+                nm = nm.expand(-1, pred.shape[1], -1, -1)
+
+        pair_terms: list[torch.Tensor] = []
+        for b in range(pred.shape[0]):
+            if standard_mask is not None and float(standard_mask[b].item()) > 0.5:
+                continue
+            if hard_only and hard_mask is not None and float(hard_mask[b].item()) <= 0.5:
+                continue
+
+            valid = (mask[b] > 0.5)
+            if int(valid.sum().item()) < 64:
+                continue
+            t = target[b][valid]
+            p = pred[b][valid]
+            if t.numel() < 64:
+                continue
+
+            t32 = t.float()
+            q_hi = torch.quantile(t32, top_q)
+            q_lo = torch.quantile(t32, bot_q)
+
+            hi = (t >= q_hi.to(t.dtype)).nonzero(as_tuple=False).view(-1)
+            lo = (t <= q_lo.to(t.dtype)).nonzero(as_tuple=False).view(-1)
+            if hi.numel() < 4 or lo.numel() < 4:
+                continue
+
+            hi = hi[torch.argsort(t[hi], descending=True)]
+            lo = lo[torch.argsort(t[lo], descending=False)]
+            k = int(min(pair_cap, hi.numel(), lo.numel()))
+            if k < 4:
+                continue
+
+            if hi.numel() > k:
+                idx_hi = torch.linspace(0, hi.numel() - 1, steps=k, device=hi.device).long()
+                hi = hi[idx_hi]
+            else:
+                hi = hi[:k]
+            if lo.numel() > k:
+                idx_lo = torch.linspace(0, lo.numel() - 1, steps=k, device=lo.device).long()
+                lo = lo[idx_lo]
+            else:
+                lo = lo[:k]
+
+            t_gap = t[hi] - t[lo]
+            p_gap = p[hi] - p[lo]
+            logits = p_gap / tau_g
+            target_prob = torch.sigmoid(t_gap / tau_g).detach()
+            bce = torch.nn.functional.binary_cross_entropy_with_logits(logits, target_prob, reduction="none")
+
+            gap_w = torch.relu(t_gap - 0.1 * (q_hi.to(t.dtype) - q_lo.to(t.dtype)))
+            gap_w = gap_w / gap_w.mean().clamp_min(1e-3)
+            if nm is not None:
+                nflat = nm[b][valid]
+                near = torch.maximum(nflat[hi], nflat[lo])
+                gap_w = gap_w * (1.0 + narrow_boost * near)
+
+            pair_terms.append((bce * gap_w).mean())
+
+        if pair_terms:
+            total_loss = total_loss + float(global_rank_lambda) * torch.stack(pair_terms).mean()
+
+    # Anti-forgetting distillation anchor:
+    # keep student close to a fixed strong residual model while learning new structure.
+    if distill_target is not None and float(distill_lambda) > 0.0:
+        dm = (mask * loss_weight).to(pred.dtype)
+        if sample_weight is not None:
+            dm = dm * sample_weight.to(pred.dtype).view(-1, 1, 1, 1)
+        if standard_mask is not None:
+            dm = dm * (1.0 - standard_mask.to(pred.dtype).view(-1, 1, 1, 1))
+        if distill_hard_only and hard_mask is not None:
+            dm = dm * hard_mask.to(pred.dtype).view(-1, 1, 1, 1)
+
+        nm = None
+        if narrow_mask is not None and float(distill_narrow_boost) > 0.0:
+            nm = narrow_mask.to(pred.dtype)
+            if nm.ndim == 3:
+                nm = nm.unsqueeze(1)
+            if nm.shape[1] == 1 and pred.shape[1] != 1:
+                nm = nm.expand(-1, pred.shape[1], -1, -1)
+            dm = dm * (1.0 + float(distill_narrow_boost) * nm)
+
+        fq = float(np.clip(distill_focus_quantile, 0.0, 1.0))
+        if fq > 0.0:
+            focused = torch.zeros_like(dm)
+            for bi in range(dm.shape[0]):
+                vb = dm[bi] > 0.0
+                if int(vb.sum().item()) < 16:
+                    focused[bi] = dm[bi]
+                    continue
+                qv = torch.quantile(distill_target[bi][vb].float(), fq)
+                focused[bi] = dm[bi] * (distill_target[bi] >= qv.to(distill_target.dtype)).to(pred.dtype)
+            dm = focused
+
+        dden = dm.sum().clamp_min(1.0)
+        if float(dden.item()) > 1.0:
+            delta = float(max(distill_huber_delta, 1e-5))
+            distill_elem = torch.nn.functional.smooth_l1_loss(pred, distill_target.detach(), beta=delta, reduction="none")
+            distill_loss = (distill_elem * dm).sum() / dden
+            total_loss = total_loss + float(distill_lambda) * distill_loss
+
+            if float(distill_under_lambda) > 0.0:
+                under = torch.relu(distill_target.detach() - pred)
+                under_loss = (under * dm).sum() / dden
+                total_loss = total_loss + float(distill_under_lambda) * under_loss
+
     return total_loss
 
 
@@ -171,6 +472,34 @@ def _eval(
     hard_rank_lambda: float = 0.0,
     hard_rank_topk: int = 64,
     hard_rank_margin: float = 0.01,
+    gradient_struct_lambda: float = 0.0,
+    laplacian_struct_lambda: float = 0.0,
+    local_rank_lambda: float = 0.0,
+    local_rank_margin: float = 0.01,
+    local_rank_delta_threshold: float = 0.005,
+    local_rank_weight_power: float = 1.0,
+    grad_dir_lambda: float = 0.0,
+    grad_dir_min_mag: float = 0.01,
+    local_prob_rank_lambda: float = 0.0,
+    local_prob_rank_tau: float = 0.02,
+    local_prob_rank_delta_threshold: float = 0.003,
+    local_prob_rank_focus_quantile: float = 0.7,
+    local_prob_rank_weight_power: float = 1.0,
+    local_prob_rank_hard_only: bool = True,
+    local_prob_rank_narrow_boost: float = 0.0,
+    global_rank_lambda: float = 0.0,
+    global_rank_pairs: int = 96,
+    global_rank_tau: float = 0.04,
+    global_rank_top_quantile: float = 0.85,
+    global_rank_bottom_quantile: float = 0.25,
+    global_rank_hard_only: bool = True,
+    global_rank_narrow_boost: float = 0.0,
+    distill_lambda: float = 0.0,
+    distill_huber_delta: float = 0.02,
+    distill_focus_quantile: float = 0.0,
+    distill_hard_only: bool = False,
+    distill_narrow_boost: float = 0.0,
+    distill_under_lambda: float = 0.0,
 ) -> float:
     model.eval()
     total = 0.0
@@ -215,6 +544,35 @@ def _eval(
                 hard_rank_lambda=hard_rank_lambda,
                 hard_rank_topk=hard_rank_topk,
                 hard_rank_margin=hard_rank_margin,
+                gradient_struct_lambda=gradient_struct_lambda,
+                laplacian_struct_lambda=laplacian_struct_lambda,
+                local_rank_lambda=local_rank_lambda,
+                local_rank_margin=local_rank_margin,
+                local_rank_delta_threshold=local_rank_delta_threshold,
+                local_rank_weight_power=local_rank_weight_power,
+                grad_dir_lambda=grad_dir_lambda,
+                grad_dir_min_mag=grad_dir_min_mag,
+                local_prob_rank_lambda=local_prob_rank_lambda,
+                local_prob_rank_tau=local_prob_rank_tau,
+                local_prob_rank_delta_threshold=local_prob_rank_delta_threshold,
+                local_prob_rank_focus_quantile=local_prob_rank_focus_quantile,
+                local_prob_rank_weight_power=local_prob_rank_weight_power,
+                local_prob_rank_hard_only=local_prob_rank_hard_only,
+                local_prob_rank_narrow_boost=local_prob_rank_narrow_boost,
+                global_rank_lambda=global_rank_lambda,
+                global_rank_pairs=global_rank_pairs,
+                global_rank_tau=global_rank_tau,
+                global_rank_top_quantile=global_rank_top_quantile,
+                global_rank_bottom_quantile=global_rank_bottom_quantile,
+                global_rank_hard_only=global_rank_hard_only,
+                global_rank_narrow_boost=global_rank_narrow_boost,
+                distill_target=None,
+                distill_lambda=distill_lambda,
+                distill_huber_delta=distill_huber_delta,
+                distill_focus_quantile=distill_focus_quantile,
+                distill_hard_only=distill_hard_only,
+                distill_narrow_boost=distill_narrow_boost,
+                distill_under_lambda=distill_under_lambda,
             )
             total += float(loss.item())
             count += 1
@@ -326,6 +684,34 @@ def train_network(
     hard_rank_lambda = float(getattr(cfg.train, "hard_rank_lambda", 0.0))
     hard_rank_topk = int(getattr(cfg.train, "hard_rank_topk", 64))
     hard_rank_margin = float(getattr(cfg.train, "hard_rank_margin", 0.01))
+    gradient_struct_lambda = float(getattr(cfg.train, "gradient_struct_lambda", 0.0))
+    laplacian_struct_lambda = float(getattr(cfg.train, "laplacian_struct_lambda", 0.0))
+    local_rank_lambda = float(getattr(cfg.train, "local_rank_lambda", 0.0))
+    local_rank_margin = float(getattr(cfg.train, "local_rank_margin", 0.01))
+    local_rank_delta_threshold = float(getattr(cfg.train, "local_rank_delta_threshold", 0.005))
+    local_rank_weight_power = float(getattr(cfg.train, "local_rank_weight_power", 1.0))
+    grad_dir_lambda = float(getattr(cfg.train, "grad_dir_lambda", 0.0))
+    grad_dir_min_mag = float(getattr(cfg.train, "grad_dir_min_mag", 0.01))
+    local_prob_rank_lambda = float(getattr(cfg.train, "local_prob_rank_lambda", 0.0))
+    local_prob_rank_tau = float(getattr(cfg.train, "local_prob_rank_tau", 0.02))
+    local_prob_rank_delta_threshold = float(getattr(cfg.train, "local_prob_rank_delta_threshold", 0.003))
+    local_prob_rank_focus_quantile = float(getattr(cfg.train, "local_prob_rank_focus_quantile", 0.7))
+    local_prob_rank_weight_power = float(getattr(cfg.train, "local_prob_rank_weight_power", 1.0))
+    local_prob_rank_hard_only = bool(getattr(cfg.train, "local_prob_rank_hard_only", True))
+    local_prob_rank_narrow_boost = float(getattr(cfg.train, "local_prob_rank_narrow_boost", 0.0))
+    global_rank_lambda = float(getattr(cfg.train, "global_rank_lambda", 0.0))
+    global_rank_pairs = int(getattr(cfg.train, "global_rank_pairs", 96))
+    global_rank_tau = float(getattr(cfg.train, "global_rank_tau", 0.04))
+    global_rank_top_quantile = float(getattr(cfg.train, "global_rank_top_quantile", 0.85))
+    global_rank_bottom_quantile = float(getattr(cfg.train, "global_rank_bottom_quantile", 0.25))
+    global_rank_hard_only = bool(getattr(cfg.train, "global_rank_hard_only", True))
+    global_rank_narrow_boost = float(getattr(cfg.train, "global_rank_narrow_boost", 0.0))
+    distill_lambda = float(getattr(cfg.train, "distill_lambda", 0.0))
+    distill_huber_delta = float(getattr(cfg.train, "distill_huber_delta", 0.02))
+    distill_focus_quantile = float(getattr(cfg.train, "distill_focus_quantile", 0.0))
+    distill_hard_only = bool(getattr(cfg.train, "distill_hard_only", False))
+    distill_narrow_boost = float(getattr(cfg.train, "distill_narrow_boost", 0.0))
+    distill_under_lambda = float(getattr(cfg.train, "distill_under_lambda", 0.0))
 
     for epoch in range(cfg.train.epochs):
         model.train()
@@ -374,6 +760,35 @@ def train_network(
                     hard_rank_lambda=hard_rank_lambda,
                     hard_rank_topk=hard_rank_topk,
                     hard_rank_margin=hard_rank_margin,
+                    gradient_struct_lambda=gradient_struct_lambda,
+                    laplacian_struct_lambda=laplacian_struct_lambda,
+                    local_rank_lambda=local_rank_lambda,
+                    local_rank_margin=local_rank_margin,
+                    local_rank_delta_threshold=local_rank_delta_threshold,
+                    local_rank_weight_power=local_rank_weight_power,
+                    grad_dir_lambda=grad_dir_lambda,
+                    grad_dir_min_mag=grad_dir_min_mag,
+                    local_prob_rank_lambda=local_prob_rank_lambda,
+                    local_prob_rank_tau=local_prob_rank_tau,
+                    local_prob_rank_delta_threshold=local_prob_rank_delta_threshold,
+                    local_prob_rank_focus_quantile=local_prob_rank_focus_quantile,
+                    local_prob_rank_weight_power=local_prob_rank_weight_power,
+                    local_prob_rank_hard_only=local_prob_rank_hard_only,
+                    local_prob_rank_narrow_boost=local_prob_rank_narrow_boost,
+                    global_rank_lambda=global_rank_lambda,
+                    global_rank_pairs=global_rank_pairs,
+                    global_rank_tau=global_rank_tau,
+                    global_rank_top_quantile=global_rank_top_quantile,
+                    global_rank_bottom_quantile=global_rank_bottom_quantile,
+                    global_rank_hard_only=global_rank_hard_only,
+                    global_rank_narrow_boost=global_rank_narrow_boost,
+                    distill_target=None,
+                    distill_lambda=distill_lambda,
+                    distill_huber_delta=distill_huber_delta,
+                    distill_focus_quantile=distill_focus_quantile,
+                    distill_hard_only=distill_hard_only,
+                    distill_narrow_boost=distill_narrow_boost,
+                    distill_under_lambda=distill_under_lambda,
                 )
 
             scaler.scale(loss).backward()
@@ -397,6 +812,34 @@ def train_network(
             hard_rank_lambda=hard_rank_lambda,
             hard_rank_topk=hard_rank_topk,
             hard_rank_margin=hard_rank_margin,
+            gradient_struct_lambda=gradient_struct_lambda,
+            laplacian_struct_lambda=laplacian_struct_lambda,
+            local_rank_lambda=local_rank_lambda,
+            local_rank_margin=local_rank_margin,
+            local_rank_delta_threshold=local_rank_delta_threshold,
+            local_rank_weight_power=local_rank_weight_power,
+            grad_dir_lambda=grad_dir_lambda,
+            grad_dir_min_mag=grad_dir_min_mag,
+            local_prob_rank_lambda=local_prob_rank_lambda,
+            local_prob_rank_tau=local_prob_rank_tau,
+            local_prob_rank_delta_threshold=local_prob_rank_delta_threshold,
+            local_prob_rank_focus_quantile=local_prob_rank_focus_quantile,
+            local_prob_rank_weight_power=local_prob_rank_weight_power,
+            local_prob_rank_hard_only=local_prob_rank_hard_only,
+            local_prob_rank_narrow_boost=local_prob_rank_narrow_boost,
+            global_rank_lambda=global_rank_lambda,
+            global_rank_pairs=global_rank_pairs,
+            global_rank_tau=global_rank_tau,
+            global_rank_top_quantile=global_rank_top_quantile,
+            global_rank_bottom_quantile=global_rank_bottom_quantile,
+            global_rank_hard_only=global_rank_hard_only,
+            global_rank_narrow_boost=global_rank_narrow_boost,
+            distill_lambda=distill_lambda,
+            distill_huber_delta=distill_huber_delta,
+            distill_focus_quantile=distill_focus_quantile,
+            distill_hard_only=distill_hard_only,
+            distill_narrow_boost=distill_narrow_boost,
+            distill_under_lambda=distill_under_lambda,
         )
         history["lr"].append(float(optimizer.param_groups[0]["lr"]))
         history["train_loss"].append(train_loss)
