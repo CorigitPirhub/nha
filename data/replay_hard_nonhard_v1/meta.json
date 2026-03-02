@@ -1,0 +1,90 @@
+{
+  "seed": 43,
+  "name": "replay_hard_nonhard_mix",
+  "hard_roots": [
+    "data/structrank_hard_v1"
+  ],
+  "replay_roots": [
+    "data/structrank_mix_v2",
+    "data/residual_fix_v3"
+  ],
+  "selected_counts": {
+    "train_hard_count": 180,
+    "train_nonhard_count": 100,
+    "val_hard_count": 40,
+    "val_nonhard_count": 12
+  },
+  "replay_counts": {
+    "train_hard_replay": 0,
+    "train_nonhard_replay": 46,
+    "val_hard_replay": 0,
+    "val_nonhard_replay": 2
+  },
+  "splits": {
+    "train": {
+      "split": "train",
+      "num_samples": 280,
+      "hard_samples": 180,
+      "nonhard_samples": 100,
+      "nonhard_ratio": 0.35714285714285715,
+      "difficulty_histogram": {
+        "medium": 75,
+        "simple": 25,
+        "hard": 180
+      },
+      "scenario_histogram": {
+        "maze_multi": 36,
+        "warehouse": 25,
+        "deadend_labyrinth": 62,
+        "narrow_passage": 97,
+        "maze_single": 55,
+        "city_street": 5
+      },
+      "task_histogram": {
+        "narrow_passage": 115,
+        "long_detour": 90,
+        "deadend_reverse": 49,
+        "dynamic_avoid": 14,
+        "multi_goal": 12
+      },
+      "category_histogram": {
+        "B": 75,
+        "A": 25,
+        "C": 180
+      }
+    },
+    "val": {
+      "split": "val",
+      "num_samples": 52,
+      "hard_samples": 40,
+      "nonhard_samples": 12,
+      "nonhard_ratio": 0.23076923076923078,
+      "difficulty_histogram": {
+        "medium": 12,
+        "hard": 40
+      },
+      "scenario_histogram": {
+        "maze_multi": 7,
+        "narrow_passage": 17,
+        "deadend_labyrinth": 14,
+        "maze_single": 12,
+        "city_street": 2
+      },
+      "task_histogram": {
+        "long_detour": 18,
+        "narrow_passage": 17,
+        "deadend_reverse": 14,
+        "multi_goal": 1,
+        "dynamic_avoid": 2
+      },
+      "category_histogram": {
+        "B": 12,
+        "C": 40
+      }
+    },
+    "test": {
+      "split": "test",
+      "num_samples": 0
+    }
+  }
+}

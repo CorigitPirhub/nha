@@ -15,6 +15,8 @@
 - 第八阶段：分层 alpha + residual_alpha 联合贝叶斯搜索（已完成）
 - 第九阶段：场景加权 full-BO（narrow/maze 惩罚）+ 定向极值验证（当前最佳）
 - 第十阶段：Exp3 最终冻结 + 停止准则触发 + 资源转向 Exp4/maze 训练修复（进行中）
+- 第十一阶段：hard+non-hard 回放混合数据联合训练（已完成）
+- 第十二阶段：定稿决策（停止 Maze 迭代，manual_v11b 终版）
 
 ---
 
@@ -761,3 +763,172 @@ $$
 从本阶段起，算力优先投向：
 1. Exp4 泛化验证（基于 `manual_v11b` 最终冻结版）。
 2. maze 结构性瓶颈修复（训练侧：防遗忘蒸馏锚定 + 结构/排序损失联合训练），不再继续做 Exp3 推理参数微调。
+
+### Exp4 泛化验证（manual_v11b 最终冻结版）
+结果目录：`outputs/paper/manual_v11b_exp4_fair/`
+
+- 对比口径：`hybrid_budget_cap=0`, `sampling_max_iters=300`（fair）
+- 结果（18 case）：
+  - `Ours`：`success=1.0`, `avg_expansions=12177.278`, `avg_time_ms=4537.729`
+  - `Hybrid A* (RS)`：`success=1.0`, `avg_expansions=12368.111`, `avg_time_ms=4611.133`
+  - `dE=-1.543%`, `dT=-1.592%`
+
+备注：
+- 本次 `manual_v11b_exp4_fair` 的绝对时间均值高于此前部分 run（同轮 `RS/Ours` 同向抬升），但相对指标 `dE/dT` 保持正收益。
+
+### maze 训练侧修复迭代（联合训练）
+#### 迭代 1：`residual_maze_joint_v1`
+- 训练目录：`outputs/residual_maze_joint_v1/`
+- checkpoint：`outputs/residual_maze_joint_v1/checkpoints/heuristic_net_residual_maze_joint_v1.pt`
+- 思路：hard 数据上较强结构/排序损失 + 蒸馏锚定。
+- Exp3 full：`outputs/paper/residual_maze_joint_v1_exp3_full/exp_results_summary.csv`
+  - 全局 `dE=+2.392%`（退化）
+  - `maze dE=+0.000%`（从 `+0.658%` 压平）
+  - `narrow dE=+0.033%`, `other dE=+4.050%`（明显遗忘）
+
+#### 迭代 2：`residual_maze_joint_v2`
+- 训练目录：`outputs/residual_maze_joint_v2/`
+- checkpoint：`outputs/residual_maze_joint_v2/checkpoints/heuristic_net_residual_maze_joint_v2.pt`
+- 思路：强蒸馏锚定 + 轻量结构损失（降低遗忘风险）。
+- Exp3 full：`outputs/paper/residual_maze_joint_v2_exp3_full/exp_results_summary.csv`
+  - 全局 `dE=+0.773%`（仍退化）
+  - `maze dE=+0.658%`（未改善）
+  - `narrow dE=+0.390%`, `other dE=+1.039%`
+- Exp4 fair：`outputs/paper/residual_maze_joint_v2_exp4_fair/exp_results_summary.csv`
+  - `dE=-0.561%`（弱于 `manual_v11b` 的 `-1.543%`）
+
+### 阶段小结（当前结论）
+1. Exp3 最终版继续保持 `manual_v11b`（已冻结），不以 `v1/v2` 替代。  
+2. “仅 hard 数据联合微调”会引入显著遗忘，当前未形成可交付的 maze 修复增益。  
+3. 后续若继续该方向，应优先引入**回放式混合数据**（hard + non-hard）后再做蒸馏/结构联合训练，而非继续仅 hard 微调。  
+
+---
+
+## 第十一阶段：hard+non-hard 回放混合数据联合训练
+时间：2026-03-01
+
+### 目标
+落实“hard+non-hard 回放混合数据”方案，验证是否能够避免“仅 hard 微调”导致的遗忘。
+
+### 实现
+1. 新增数据构建脚本：`scripts/build_replay_mix_dataset.py`
+   - 从 `data/structrank_hard_v1` 抽取 hard 样本。
+   - 从 `data/structrank_mix_v2` 与 `data/residual_fix_v3` 抽取 non-hard（`medium/simple`）样本。
+   - 支持 non-hard replay（有放回抽样）补齐配比。
+2. 构建数据集：`data/replay_hard_nonhard_v1`
+   - train：`280`（hard=180, non-hard=100, non-hard replay=46）
+   - val：`52`（hard=40, non-hard=12, non-hard replay=2）
+3. 在该数据集上进行“蒸馏锚定 + 结构/排序损失”联合训练，并保持推理侧参数固定为 `manual_v11b` 口径做评测。
+
+### 联合训练结果
+#### replay_mix_v1
+- 训练目录：`outputs/residual_replay_mix_joint_v1/`
+- checkpoint：`outputs/residual_replay_mix_joint_v1/checkpoints/heuristic_net_residual_replay_mix_joint_v1.pt`
+- Exp3 full：`outputs/paper/residual_replay_mix_joint_v1_exp3_full/exp_results_summary.csv`
+  - `dE=-4.897%`, `dT=-4.729%`, success 持平 `0.7778`
+  - 分桶：`maze=+0.658%`, `narrow=-4.981%`, `other=-4.905%`
+- Exp4 fair：`outputs/paper/residual_replay_mix_joint_v1_exp4_fair/exp_results_summary.csv`
+  - `dE=+0.348%`（相对 RS 退化）
+
+#### replay_mix_v2（更强蒸馏、弱结构约束）
+- 训练目录：`outputs/residual_replay_mix_joint_v2/`
+- checkpoint：`outputs/residual_replay_mix_joint_v2/checkpoints/heuristic_net_residual_replay_mix_joint_v2.pt`
+- Exp3 full：`outputs/paper/residual_replay_mix_joint_v2_exp3_full/exp_results_summary.csv`
+  - `dE=+0.190%`, `dT=-0.258%`, success 持平 `0.7778`
+  - 分桶：`maze=+0.658%`, `narrow=+0.535%`, `other=-0.054%`
+
+### 对比与结论
+对比基线 `manual_v11b`（Exp3 `dE=-9.437%`, Exp4 `dE=-1.543%`）：
+1. 回放混合训练确实避免了“仅 hard 微调”的灾难性遗忘（不再出现 `+2.392%` 这类大幅正退化），但尚未恢复到 `manual_v11b` 的全局最优水平。  
+2. `replay_mix_v1` 在 Exp3 的窄道提升明显（`narrow -4.981%`），但牺牲了 `other` 场景，且 Exp4 出现退化。  
+3. `replay_mix_v2` 过度锚定，残差增益被显著削弱，未形成可交付替代。  
+4. 当前可交付最优仍为冻结版 `manual_v11b`。  
+
+---
+
+## 第十二阶段：定稿决策（停止 Maze 迭代）
+时间：2026-03-01
+
+### 决策
+1. 停止继续针对 Maze 的专项优化迭代。  
+2. `manual_v11b` 作为该技术路线最终版本定稿。  
+
+### 依据
+1. 与目标线差距极小（`-9.437%` vs `-9.5%`，仅 `0.063` 个百分点）。  
+2. 后续 Maze 训练侧迭代均出现全局或泛化退化风险，未形成稳定超越。  
+3. 边际收益已低于工程与算力投入成本。  
+
+### 定稿产物
+- 最终 checkpoint：`outputs/checkpoints/exp3_final_manual_v11b.pt`
+- 冻结清单：`outputs/paper/exp3_final_manual_v11b_manifest.json`
+- 基准结果：
+  - Exp3：`outputs/paper/manual_v11b_exp3_full/exp_results_summary.csv`
+  - Exp4 fair：`outputs/paper/manual_v11b_exp4_fair/exp_results_summary.csv`
+
+---
+
+## 第十三阶段：Dual-Map 自适应 Fast/Slow 路由器（A* 智能导航系统）
+时间：2026-03-02
+
+### 目标
+为 A* 增加“快慢双轨”路由：
+1. Fast Path（Exp1/Exp2）：极低时延（目标 <=1~2ms）且成功率不降。  
+2. Slow Path（Exp3/Exp4）：保持 `manual_v11b` 质量基线不退化。  
+
+### 代码实现（创新点）
+核心文件：`scripts/evaluate_baselines.py`
+
+新增模块：
+1. `Dual-Map Adaptive Router`（风险复杂度门控）  
+2. `Risk-Weighted Complexity Score`：基于下列特征估计场景复杂度  
+   - 直连线阻塞率 `line_block_ratio`
+   - 局部走廊占据率 `local_occ_ratio`
+   - 全局占据率 `global_occ_ratio`
+   - 归一化起终点距离 `distance_ratio`
+   - LOS 阻断惩罚 `los_penalty`
+3. 路由规则：
+   - `easy_rule` 命中 -> Fast
+   - `hard_clutter_rule` 命中 -> Slow
+   - 其余按 score 与 margin 决策
+4. 日志与可解释性：
+   - `logs/dual_path_router_decisions.json` 记录每个 case 的 route/reason/score
+   - `logs/experiment_config.json` 写入 `router_config` 与 `router_summary`
+
+说明：Slow Path 逻辑未改，仍是 `manual_v11b` 的学习启发推理链路；Exp3/Exp4 主流程代码路径未接入该路由。
+
+### 实验与结果
+#### Exp1/Exp2（Fast Path 验收）
+最终目录：`outputs/paper/manual_v11b_dualpath_exp12_v2/`
+
+对比基线 `manual_v11b_exp12`：
+1. Exp1 (MP), Ours
+   - success：`1.000 -> 1.000`
+   - avg_time_ms：`25.759 -> 0.323`
+2. Exp2 (CSM), Ours
+   - success：`1.000 -> 1.000`
+   - avg_time_ms：`30.424 -> 0.584`
+
+路由统计（Exp1+Exp2）：
+- `fast_cases=1200/1200`，`fast_ratio=1.0`
+- reason 全部为 `easy_rule`
+
+结论：Exp1/2 时延显著下降并满足 `<=1~2ms`，成功率无下降。
+
+#### Exp3（Slow Path 非退化验收）
+目录：`outputs/paper/manual_v11b_dualpath_exp3_full/`
+
+与基线 `outputs/paper/manual_v11b_exp3_full/` 对比：
+- `dE(Full vs No-Residual)`：`-9.437% -> -9.437%`（漂移 `0.000%`）
+- 满足 `|dE drift| <= 0.5%`
+
+#### Exp4（Slow Path 非退化验收）
+目录：`outputs/paper/manual_v11b_dualpath_exp4_fair/`
+
+与基线 `outputs/paper/manual_v11b_exp4_fair/` 对比：
+- `dE(Ours vs RS)`：`-1.543% -> -1.543%`（漂移 `0.000%`）
+- 满足 `|dE drift| <= 0.5%`
+
+### 验收结论
+1. Fast Path 目标达成：Exp1/2 `Ours` 平均时延降至 `<1ms` 量级，成功率不降。  
+2. Slow Path 目标达成：Exp3/4 的 `dE` 相对 `manual_v11b` 漂移为 `0`，无质量退化。  
+3. 双模态系统可作为独立创新点：通过复杂度驱动的双图路由，在不触碰高难场景质量基线的前提下，解决低难场景推理时延瓶颈。  

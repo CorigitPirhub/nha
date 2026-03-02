@@ -249,6 +249,101 @@ def parse_args() -> argparse.Namespace:
         choices=["euclidean", "rs"],
         help="Base heuristic used for Ours in Exp1 when checkpoint is in residual mode.",
     )
+    p.add_argument(
+        "--enable-dual-path-router",
+        action="store_true",
+        help="Enable Dual-Map Adaptive Router for Ours in Exp1/Exp2: fast classic A* vs slow learned heuristic.",
+    )
+    p.add_argument(
+        "--router-corridor-radius-cells",
+        type=int,
+        default=2,
+        help="Half width (in grid cells) of local corridor used to estimate complexity around start-goal line.",
+    )
+    p.add_argument(
+        "--router-samples-per-cell",
+        type=float,
+        default=1.0,
+        help="Sampling density on start-goal segment when computing complexity statistics.",
+    )
+    p.add_argument(
+        "--router-fast-max-distance-ratio",
+        type=float,
+        default=0.75,
+        help="Fast-path rule gate: normalized start-goal distance upper bound.",
+    )
+    p.add_argument(
+        "--router-fast-max-line-block-ratio",
+        type=float,
+        default=0.30,
+        help="Fast-path rule gate: max occupied ratio directly on start-goal line samples.",
+    )
+    p.add_argument(
+        "--router-fast-max-local-occ-ratio",
+        type=float,
+        default=0.40,
+        help="Fast-path rule gate: max local obstacle ratio in sampled corridor patches.",
+    )
+    p.add_argument(
+        "--router-fast-max-global-occ-ratio",
+        type=float,
+        default=0.55,
+        help="Fast-path rule gate: max global obstacle ratio for quick routing.",
+    )
+    p.add_argument(
+        "--router-slow-min-line-block-ratio",
+        type=float,
+        default=0.65,
+        help="Slow-path hard gate when direct line blockage is very high.",
+    )
+    p.add_argument(
+        "--router-slow-min-local-occ-ratio",
+        type=float,
+        default=0.60,
+        help="Slow-path hard gate when local corridor clutter is very high.",
+    )
+    p.add_argument(
+        "--router-score-threshold",
+        type=float,
+        default=0.47,
+        help="Risk-weighted complexity threshold: score above this goes to slow path.",
+    )
+    p.add_argument(
+        "--router-w-line-block",
+        type=float,
+        default=0.42,
+        help="Weight of direct line blockage in routing complexity score.",
+    )
+    p.add_argument(
+        "--router-w-local-occ",
+        type=float,
+        default=0.33,
+        help="Weight of local corridor clutter in routing complexity score.",
+    )
+    p.add_argument(
+        "--router-w-distance",
+        type=float,
+        default=0.18,
+        help="Weight of normalized start-goal distance in routing complexity score.",
+    )
+    p.add_argument(
+        "--router-w-global-occ",
+        type=float,
+        default=0.07,
+        help="Weight of global occupancy ratio in routing complexity score.",
+    )
+    p.add_argument(
+        "--router-los-penalty",
+        type=float,
+        default=0.08,
+        help="Additional risk penalty when exact line-of-sight from start to goal is blocked.",
+    )
+    p.add_argument(
+        "--router-fast-score-margin",
+        type=float,
+        default=0.06,
+        help="Confidence margin below score threshold to classify as fast when no hard rule is triggered.",
+    )
 
     return p.parse_args()
 
@@ -729,6 +824,155 @@ def _euclidean_field(
     return field
 
 
+def _line_sample_indices(
+    start_ix: int,
+    start_iy: int,
+    goal_ix: int,
+    goal_iy: int,
+    w: int,
+    h: int,
+    samples_per_cell: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    dist_cells = float(math.hypot(goal_ix - start_ix, goal_iy - start_iy))
+    n = int(max(2, math.ceil(dist_cells * max(float(samples_per_cell), 0.25))))
+    xs = np.linspace(float(start_ix), float(goal_ix), num=n, dtype=np.float32)
+    ys = np.linspace(float(start_iy), float(goal_iy), num=n, dtype=np.float32)
+    xi = np.clip(np.round(xs).astype(np.int64), 0, w - 1)
+    yi = np.clip(np.round(ys).astype(np.int64), 0, h - 1)
+    return xi, yi
+
+
+def _estimate_dual_map_complexity(
+    occupancy: np.ndarray,
+    resolution: float,
+    start_xy: tuple[float, float],
+    goal_xy: tuple[float, float],
+    args: argparse.Namespace,
+) -> dict[str, float | bool]:
+    h, w = occupancy.shape
+    sx, sy = _world_to_grid(start_xy[0], start_xy[1], resolution, w, h)
+    gx, gy = _world_to_grid(goal_xy[0], goal_xy[1], resolution, w, h)
+
+    los_clear = bool(_line_of_sight(occupancy, (sx, sy), (gx, gy)))
+    xi, yi = _line_sample_indices(
+        start_ix=sx,
+        start_iy=sy,
+        goal_ix=gx,
+        goal_iy=gy,
+        w=w,
+        h=h,
+        samples_per_cell=float(args.router_samples_per_cell),
+    )
+    line_block_ratio = float(np.mean(occupancy[yi, xi].astype(np.float32)))
+
+    radius = int(max(args.router_corridor_radius_cells, 0))
+    if radius <= 0:
+        local_occ_ratio = line_block_ratio
+    else:
+        occ_u8 = occupancy.astype(np.uint8)
+        patch_vals: list[float] = []
+        for cx, cy in zip(xi.tolist(), yi.tolist()):
+            x0 = max(int(cx) - radius, 0)
+            x1 = min(int(cx) + radius + 1, w)
+            y0 = max(int(cy) - radius, 0)
+            y1 = min(int(cy) + radius + 1, h)
+            patch = occ_u8[y0:y1, x0:x1]
+            patch_vals.append(float(np.mean(patch)))
+        local_occ_ratio = float(np.mean(np.asarray(patch_vals, dtype=np.float32))) if patch_vals else line_block_ratio
+
+    global_occ_ratio = float(np.mean(occupancy.astype(np.float32)))
+    dist_ratio = float(
+        math.hypot((gx - sx) * resolution, (gy - sy) * resolution) /
+        max(math.hypot(w * resolution, h * resolution), 1e-6)
+    )
+
+    wl = float(max(args.router_w_line_block, 0.0))
+    wc = float(max(args.router_w_local_occ, 0.0))
+    wd = float(max(args.router_w_distance, 0.0))
+    wg = float(max(args.router_w_global_occ, 0.0))
+    wsum = max(wl + wc + wd + wg, 1e-6)
+    score = (
+        wl * line_block_ratio +
+        wc * local_occ_ratio +
+        wd * dist_ratio +
+        wg * global_occ_ratio
+    ) / wsum
+    if not los_clear:
+        score += float(max(args.router_los_penalty, 0.0))
+    score = float(np.clip(score, 0.0, 1.0))
+
+    return {
+        "los_clear": los_clear,
+        "line_block_ratio": line_block_ratio,
+        "local_occ_ratio": local_occ_ratio,
+        "global_occ_ratio": global_occ_ratio,
+        "distance_ratio": dist_ratio,
+        "complexity_score": score,
+    }
+
+
+def _route_dual_map_path(
+    occupancy: np.ndarray,
+    resolution: float,
+    start_xy: tuple[float, float],
+    goal_xy: tuple[float, float],
+    args: argparse.Namespace,
+) -> dict[str, float | bool | str]:
+    feat = _estimate_dual_map_complexity(
+        occupancy=occupancy,
+        resolution=resolution,
+        start_xy=start_xy,
+        goal_xy=goal_xy,
+        args=args,
+    )
+    score = float(feat["complexity_score"])
+    line_block = float(feat["line_block_ratio"])
+    local_occ = float(feat["local_occ_ratio"])
+    global_occ = float(feat["global_occ_ratio"])
+    dist_ratio = float(feat["distance_ratio"])
+    los_clear = bool(feat["los_clear"])
+
+    fast_rule = (
+        dist_ratio <= float(max(args.router_fast_max_distance_ratio, 0.0))
+        and line_block <= float(max(args.router_fast_max_line_block_ratio, 0.0))
+        and local_occ <= float(max(args.router_fast_max_local_occ_ratio, 0.0))
+        and global_occ <= float(max(args.router_fast_max_global_occ_ratio, 0.0))
+    )
+    slow_rule = (
+        line_block >= float(max(args.router_slow_min_line_block_ratio, 0.0))
+        and local_occ >= float(max(args.router_slow_min_local_occ_ratio, 0.0))
+    )
+    threshold = float(np.clip(args.router_score_threshold, 0.0, 1.0))
+    fast_margin = float(max(args.router_fast_score_margin, 0.0))
+
+    if slow_rule:
+        route = "slow"
+        reason = "hard_clutter_rule"
+    elif fast_rule:
+        route = "fast"
+        reason = "easy_rule"
+    elif score <= max(threshold - fast_margin, 0.0):
+        route = "fast"
+        reason = "score_margin_fast"
+    elif score <= threshold:
+        route = "fast" if los_clear else "slow"
+        reason = "score_tie_los"
+    else:
+        route = "slow"
+        reason = "score_high"
+
+    return {
+        "route": route,
+        "reason": reason,
+        "los_clear": los_clear,
+        "line_block_ratio": line_block,
+        "local_occ_ratio": local_occ,
+        "global_occ_ratio": global_occ,
+        "distance_ratio": dist_ratio,
+        "complexity_score": score,
+    }
+
+
 def _method_summary(rows: list[EvalRow]) -> dict[tuple[str, str, str], dict]:
     grouped: dict[tuple[str, str, str], list[EvalRow]] = defaultdict(list)
     for r in rows:
@@ -1004,9 +1248,28 @@ def _run_standard_experiment(
     neural_astar: NeuralAStarLite,
     ours_predictor: NeuralHeuristicPredictor,
     args: argparse.Namespace,
-) -> tuple[list[EvalRow], dict]:
+) -> tuple[list[EvalRow], dict, dict]:
     rows: list[EvalRow] = []
     fig_payload: dict = {}
+    router_stats: dict = {
+        "enabled": bool(args.enable_dual_path_router),
+        "total_cases": 0,
+        "fast_cases": 0,
+        "slow_cases": 0,
+        "by_dataset": {},
+        "reasons": {},
+        "avg_complexity_score": float("nan"),
+        "avg_line_block_ratio": float("nan"),
+        "avg_local_occ_ratio": float("nan"),
+        "avg_global_occ_ratio": float("nan"),
+        "avg_distance_ratio": float("nan"),
+        "decisions": [],
+    }
+    _score_vals: list[float] = []
+    _line_vals: list[float] = []
+    _local_vals: list[float] = []
+    _global_vals: list[float] = []
+    _dist_vals: list[float] = []
 
     files = [
         ("mp", p) for p in mp_test_files
@@ -1119,35 +1382,117 @@ def _run_standard_experiment(
             )
         )
 
-        t0 = time.perf_counter()
-        base_override = None
-        if ours_predictor.prediction_mode == "residual" and str(args.standard_base_mode).lower() == "euclidean":
-            base_override = _euclidean_field(
+        route_meta: dict | None = None
+        if bool(args.enable_dual_path_router):
+            route_meta = _route_dual_map_path(
                 occupancy=s.occupancy,
-                goal_xy=(s.goal[0], s.goal[1]),
                 resolution=s.resolution,
-                fill_value=1e6,
+                start_xy=start_xy,
+                goal_xy=goal_xy,
+                args=args,
             )
-        pred = ours_predictor.predict_field(
-            occupancy=s.occupancy,
-            esdf=np.zeros_like(s.occupancy, dtype=np.float32),
-            start=s.start,
-            goal=s.goal,
-            resolution=s.resolution,
-            base_field_override=base_override,
-        )
-        infer_ms = (time.perf_counter() - t0) * 1000.0
-        h_ours = _resolve_2d_heuristic(pred, s.occupancy)
-        r_ours = _astar_grid(
-            occupancy=s.occupancy,
-            resolution=s.resolution,
-            start_xy=start_xy,
-            goal_xy=goal_xy,
-            max_expansions=args.grid_max_expansions,
-            heuristic_map=h_ours,
-            heuristic_weight=1.0,
-            record_expanded=(i == 0),
-        )
+            route = str(route_meta["route"])
+            reason = str(route_meta["reason"])
+            router_stats["total_cases"] += 1
+            if route == "fast":
+                router_stats["fast_cases"] += 1
+            else:
+                router_stats["slow_cases"] += 1
+            router_stats["reasons"][reason] = int(router_stats["reasons"].get(reason, 0)) + 1
+
+            ds_bucket = router_stats["by_dataset"].get(ds, None)
+            if ds_bucket is None:
+                ds_bucket = {
+                    "total_cases": 0,
+                    "fast_cases": 0,
+                    "slow_cases": 0,
+                    "_score_sum": 0.0,
+                    "_line_sum": 0.0,
+                    "_local_sum": 0.0,
+                    "_global_sum": 0.0,
+                    "_dist_sum": 0.0,
+                }
+                router_stats["by_dataset"][ds] = ds_bucket
+            ds_bucket["total_cases"] += 1
+            if route == "fast":
+                ds_bucket["fast_cases"] += 1
+            else:
+                ds_bucket["slow_cases"] += 1
+
+            score_v = float(route_meta["complexity_score"])
+            line_v = float(route_meta["line_block_ratio"])
+            local_v = float(route_meta["local_occ_ratio"])
+            global_v = float(route_meta["global_occ_ratio"])
+            dist_v = float(route_meta["distance_ratio"])
+            ds_bucket["_score_sum"] += score_v
+            ds_bucket["_line_sum"] += line_v
+            ds_bucket["_local_sum"] += local_v
+            ds_bucket["_global_sum"] += global_v
+            ds_bucket["_dist_sum"] += dist_v
+
+            _score_vals.append(score_v)
+            _line_vals.append(line_v)
+            _local_vals.append(local_v)
+            _global_vals.append(global_v)
+            _dist_vals.append(dist_v)
+
+            router_stats["decisions"].append(
+                {
+                    "case_id": p.name,
+                    "dataset": ds,
+                    "route": route,
+                    "reason": reason,
+                    "los_clear": bool(route_meta["los_clear"]),
+                    "complexity_score": score_v,
+                    "line_block_ratio": line_v,
+                    "local_occ_ratio": local_v,
+                    "global_occ_ratio": global_v,
+                    "distance_ratio": dist_v,
+                }
+            )
+
+        if route_meta is not None and str(route_meta["route"]) == "fast":
+            infer_ms = 0.0
+            r_ours = _astar_grid(
+                occupancy=s.occupancy,
+                resolution=s.resolution,
+                start_xy=start_xy,
+                goal_xy=goal_xy,
+                max_expansions=args.grid_max_expansions,
+                heuristic_map=None,
+                heuristic_weight=1.0,
+                record_expanded=(i == 0),
+            )
+        else:
+            t0 = time.perf_counter()
+            base_override = None
+            if ours_predictor.prediction_mode == "residual" and str(args.standard_base_mode).lower() == "euclidean":
+                base_override = _euclidean_field(
+                    occupancy=s.occupancy,
+                    goal_xy=(s.goal[0], s.goal[1]),
+                    resolution=s.resolution,
+                    fill_value=1e6,
+                )
+            pred = ours_predictor.predict_field(
+                occupancy=s.occupancy,
+                esdf=np.zeros_like(s.occupancy, dtype=np.float32),
+                start=s.start,
+                goal=s.goal,
+                resolution=s.resolution,
+                base_field_override=base_override,
+            )
+            infer_ms = (time.perf_counter() - t0) * 1000.0
+            h_ours = _resolve_2d_heuristic(pred, s.occupancy)
+            r_ours = _astar_grid(
+                occupancy=s.occupancy,
+                resolution=s.resolution,
+                start_xy=start_xy,
+                goal_xy=goal_xy,
+                max_expansions=args.grid_max_expansions,
+                heuristic_map=h_ours,
+                heuristic_weight=1.0,
+                record_expanded=(i == 0),
+            )
         rows.append(
             EvalRow(
                 "exp1_standard",
@@ -1177,7 +1522,27 @@ def _run_standard_experiment(
         if (i + 1) % 20 == 0 or (i + 1) == len(files):
             print(f"[exp1] processed {i + 1}/{len(files)} cases")
 
-    return rows, fig_payload
+    if bool(args.enable_dual_path_router):
+        if _score_vals:
+            router_stats["avg_complexity_score"] = float(np.mean(np.asarray(_score_vals, dtype=np.float32)))
+            router_stats["avg_line_block_ratio"] = float(np.mean(np.asarray(_line_vals, dtype=np.float32)))
+            router_stats["avg_local_occ_ratio"] = float(np.mean(np.asarray(_local_vals, dtype=np.float32)))
+            router_stats["avg_global_occ_ratio"] = float(np.mean(np.asarray(_global_vals, dtype=np.float32)))
+            router_stats["avg_distance_ratio"] = float(np.mean(np.asarray(_dist_vals, dtype=np.float32)))
+        for ds_key, ds_bucket in router_stats["by_dataset"].items():
+            n = max(int(ds_bucket["total_cases"]), 1)
+            ds_bucket["avg_complexity_score"] = float(ds_bucket["_score_sum"] / n)
+            ds_bucket["avg_line_block_ratio"] = float(ds_bucket["_line_sum"] / n)
+            ds_bucket["avg_local_occ_ratio"] = float(ds_bucket["_local_sum"] / n)
+            ds_bucket["avg_global_occ_ratio"] = float(ds_bucket["_global_sum"] / n)
+            ds_bucket["avg_distance_ratio"] = float(ds_bucket["_dist_sum"] / n)
+            del ds_bucket["_score_sum"]
+            del ds_bucket["_line_sum"]
+            del ds_bucket["_local_sum"]
+            del ds_bucket["_global_sum"]
+            del ds_bucket["_dist_sum"]
+
+    return rows, fig_payload, router_stats
 
 
 def _load_nonholonomic_case(path: Path):
@@ -2239,6 +2604,8 @@ def main() -> None:
     rows_exp3: list[EvalRow] = []
     rows_exp3_scene: list[EvalRow] = []
     rows_exp4: list[EvalRow] = []
+    router_stats_exp1: dict | None = None
+    router_stats_exp2: dict | None = None
     fig_payload: dict = {}
     mp_test_files: list[Path] = []
     csm_test_files: list[Path] = []
@@ -2255,7 +2622,7 @@ def main() -> None:
         else:
             mp_cap = int(args.max_standard_cases)
         mp_test_files = _collect_files(mp_test, max_cases=mp_cap, seed=args.seed + 401)
-        rows_std_mp, fig_mp = _run_standard_experiment(
+        rows_std_mp, fig_mp, router_stats_exp1 = _run_standard_experiment(
             mp_test_files=mp_test_files,
             csm_test_files=[],
             vin=vin,
@@ -2277,7 +2644,7 @@ def main() -> None:
         else:
             csm_cap = int(args.max_standard_cases)
         csm_test_files = _collect_files(csm_test, max_cases=csm_cap, seed=args.seed + 403)
-        rows_std_csm, fig_csm = _run_standard_experiment(
+        rows_std_csm, fig_csm, router_stats_exp2 = _run_standard_experiment(
             mp_test_files=[],
             csm_test_files=csm_test_files,
             vin=vin,
@@ -2487,6 +2854,126 @@ def main() -> None:
     detail_rows = [r.__dict__ for r in all_rows]
     (logs_dir / "exp_results_detail.json").write_text(json.dumps(detail_rows, indent=2), encoding="utf-8")
 
+    router_summary = {
+        "enabled": bool(args.enable_dual_path_router),
+        "total_cases": 0,
+        "fast_cases": 0,
+        "slow_cases": 0,
+        "fast_ratio": float("nan"),
+        "avg_complexity_score": float("nan"),
+        "avg_line_block_ratio": float("nan"),
+        "avg_local_occ_ratio": float("nan"),
+        "avg_global_occ_ratio": float("nan"),
+        "avg_distance_ratio": float("nan"),
+        "by_experiment": {},
+        "by_dataset": {},
+        "reasons": {},
+    }
+    router_decisions: list[dict] = []
+    router_parts: list[tuple[str, dict | None]] = [
+        ("exp1_mp", router_stats_exp1),
+        ("exp2_csm", router_stats_exp2),
+    ]
+    if bool(args.enable_dual_path_router):
+        score_vals: list[float] = []
+        line_vals: list[float] = []
+        local_vals: list[float] = []
+        global_vals: list[float] = []
+        dist_vals: list[float] = []
+        for exp_name, part in router_parts:
+            if not part or not bool(part.get("enabled", False)):
+                continue
+            router_summary["by_experiment"][exp_name] = {
+                "total_cases": int(part.get("total_cases", 0)),
+                "fast_cases": int(part.get("fast_cases", 0)),
+                "slow_cases": int(part.get("slow_cases", 0)),
+                "avg_complexity_score": float(part.get("avg_complexity_score", float("nan"))),
+                "avg_line_block_ratio": float(part.get("avg_line_block_ratio", float("nan"))),
+                "avg_local_occ_ratio": float(part.get("avg_local_occ_ratio", float("nan"))),
+                "avg_global_occ_ratio": float(part.get("avg_global_occ_ratio", float("nan"))),
+                "avg_distance_ratio": float(part.get("avg_distance_ratio", float("nan"))),
+            }
+            router_summary["total_cases"] += int(part.get("total_cases", 0))
+            router_summary["fast_cases"] += int(part.get("fast_cases", 0))
+            router_summary["slow_cases"] += int(part.get("slow_cases", 0))
+            if np.isfinite(float(part.get("avg_complexity_score", float("nan")))):
+                score_vals.extend(
+                    [float(part.get("avg_complexity_score"))] * max(int(part.get("total_cases", 0)), 0)
+                )
+            if np.isfinite(float(part.get("avg_line_block_ratio", float("nan")))):
+                line_vals.extend(
+                    [float(part.get("avg_line_block_ratio"))] * max(int(part.get("total_cases", 0)), 0)
+                )
+            if np.isfinite(float(part.get("avg_local_occ_ratio", float("nan")))):
+                local_vals.extend(
+                    [float(part.get("avg_local_occ_ratio"))] * max(int(part.get("total_cases", 0)), 0)
+                )
+            if np.isfinite(float(part.get("avg_global_occ_ratio", float("nan")))):
+                global_vals.extend(
+                    [float(part.get("avg_global_occ_ratio"))] * max(int(part.get("total_cases", 0)), 0)
+                )
+            if np.isfinite(float(part.get("avg_distance_ratio", float("nan")))):
+                dist_vals.extend(
+                    [float(part.get("avg_distance_ratio"))] * max(int(part.get("total_cases", 0)), 0)
+                )
+
+            for ds, ds_stat in (part.get("by_dataset", {}) or {}).items():
+                existing = router_summary["by_dataset"].get(ds, None)
+                if existing is None:
+                    existing = {
+                        "total_cases": 0,
+                        "fast_cases": 0,
+                        "slow_cases": 0,
+                        "_score_sum": 0.0,
+                        "_line_sum": 0.0,
+                        "_local_sum": 0.0,
+                        "_global_sum": 0.0,
+                        "_dist_sum": 0.0,
+                    }
+                    router_summary["by_dataset"][ds] = existing
+                n_ds = int(ds_stat.get("total_cases", 0))
+                existing["total_cases"] += n_ds
+                existing["fast_cases"] += int(ds_stat.get("fast_cases", 0))
+                existing["slow_cases"] += int(ds_stat.get("slow_cases", 0))
+                existing["_score_sum"] += float(ds_stat.get("avg_complexity_score", 0.0)) * n_ds
+                existing["_line_sum"] += float(ds_stat.get("avg_line_block_ratio", 0.0)) * n_ds
+                existing["_local_sum"] += float(ds_stat.get("avg_local_occ_ratio", 0.0)) * n_ds
+                existing["_global_sum"] += float(ds_stat.get("avg_global_occ_ratio", 0.0)) * n_ds
+                existing["_dist_sum"] += float(ds_stat.get("avg_distance_ratio", 0.0)) * n_ds
+
+            for k, v in (part.get("reasons", {}) or {}).items():
+                router_summary["reasons"][k] = int(router_summary["reasons"].get(k, 0)) + int(v)
+
+            router_decisions.extend((part.get("decisions", []) or []))
+
+        n_total = max(int(router_summary["total_cases"]), 1)
+        if int(router_summary["total_cases"]) > 0:
+            router_summary["fast_ratio"] = float(router_summary["fast_cases"] / n_total)
+        if score_vals:
+            router_summary["avg_complexity_score"] = float(np.mean(np.asarray(score_vals, dtype=np.float32)))
+        if line_vals:
+            router_summary["avg_line_block_ratio"] = float(np.mean(np.asarray(line_vals, dtype=np.float32)))
+        if local_vals:
+            router_summary["avg_local_occ_ratio"] = float(np.mean(np.asarray(local_vals, dtype=np.float32)))
+        if global_vals:
+            router_summary["avg_global_occ_ratio"] = float(np.mean(np.asarray(global_vals, dtype=np.float32)))
+        if dist_vals:
+            router_summary["avg_distance_ratio"] = float(np.mean(np.asarray(dist_vals, dtype=np.float32)))
+
+        for ds, ds_stat in router_summary["by_dataset"].items():
+            dn = max(int(ds_stat["total_cases"]), 1)
+            ds_stat["avg_complexity_score"] = float(ds_stat["_score_sum"] / dn)
+            ds_stat["avg_line_block_ratio"] = float(ds_stat["_line_sum"] / dn)
+            ds_stat["avg_local_occ_ratio"] = float(ds_stat["_local_sum"] / dn)
+            ds_stat["avg_global_occ_ratio"] = float(ds_stat["_global_sum"] / dn)
+            ds_stat["avg_distance_ratio"] = float(ds_stat["_dist_sum"] / dn)
+            del ds_stat["_score_sum"]
+            del ds_stat["_line_sum"]
+            del ds_stat["_local_sum"]
+            del ds_stat["_global_sum"]
+            del ds_stat["_dist_sum"]
+        (logs_dir / "dual_path_router_decisions.json").write_text(json.dumps(router_decisions, indent=2), encoding="utf-8")
+
     cli_args = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
     config = {
         "seed": args.seed,
@@ -2535,6 +3022,25 @@ def main() -> None:
         "residual_adaptive_trust_quantile": args.residual_adaptive_trust_quantile,
         "esdf_anchor_alpha": args.esdf_anchor_alpha,
         "esdf_anchor_threshold": args.esdf_anchor_threshold,
+        "enable_dual_path_router": bool(args.enable_dual_path_router),
+        "router_config": {
+            "corridor_radius_cells": args.router_corridor_radius_cells,
+            "samples_per_cell": args.router_samples_per_cell,
+            "fast_max_distance_ratio": args.router_fast_max_distance_ratio,
+            "fast_max_line_block_ratio": args.router_fast_max_line_block_ratio,
+            "fast_max_local_occ_ratio": args.router_fast_max_local_occ_ratio,
+            "fast_max_global_occ_ratio": args.router_fast_max_global_occ_ratio,
+            "slow_min_line_block_ratio": args.router_slow_min_line_block_ratio,
+            "slow_min_local_occ_ratio": args.router_slow_min_local_occ_ratio,
+            "score_threshold": args.router_score_threshold,
+            "w_line_block": args.router_w_line_block,
+            "w_local_occ": args.router_w_local_occ,
+            "w_distance": args.router_w_distance,
+            "w_global_occ": args.router_w_global_occ,
+            "los_penalty": args.router_los_penalty,
+            "fast_score_margin": args.router_fast_score_margin,
+        },
+        "router_summary": router_summary,
         "case_splits": {
             "mp_test_files": [p.name for p in mp_test_files],
             "csm_test_files": [p.name for p in csm_test_files],
