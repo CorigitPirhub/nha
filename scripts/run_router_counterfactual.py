@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy import ndimage
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -18,7 +19,7 @@ if str(ROOT) not in sys.path:
 from baselines.common import load_grid_sample
 from config import DEFAULT_CONFIG
 from network.inference import NeuralHeuristicPredictor
-from scripts.evaluate_baselines import _astar_grid, _euclidean_field, _path_length, _resolve_2d_heuristic
+from scripts.evaluate_baselines import _astar_grid, _euclidean_field, _path_length, _resolve_2d_heuristic, _world_to_grid
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--grid-max-expansions", type=int, default=50000)
     p.add_argument("--standard-base-mode", type=str, default="euclidean", choices=["euclidean", "rs"])
-    p.add_argument("--repeat-samples", type=int, default=3)
+    p.add_argument("--repeat-samples", type=int, default=50)
     p.add_argument("--repeat-seed", type=int, default=20260302)
     p.add_argument("--enforce-gate", action="store_true", help="When enabled, strictly enforce phase-2 gate and fail on violation.")
     p.add_argument("--out-parquet", type=Path, default=Path("outputs/router_counterfactual_v1.parquet"))
@@ -57,6 +58,19 @@ def _cv_percent(vals: list[float]) -> float:
     if abs(mu) < 1e-12:
         return float("inf")
     return float(abs(sd / mu) * 100.0)
+
+
+def _path_min_clearance_m(path_xy: list[tuple[float, float]], clearance_m: np.ndarray, resolution: float) -> float:
+    if not path_xy:
+        return float("nan")
+    h, w = clearance_m.shape
+    vals: list[float] = []
+    for x, y in path_xy:
+        gx, gy = _world_to_grid(float(x), float(y), float(resolution), w, h)
+        vals.append(float(clearance_m[gy, gx]))
+    if not vals:
+        return float("nan")
+    return float(np.min(np.asarray(vals, dtype=np.float64)))
 
 
 def main() -> None:
@@ -87,6 +101,8 @@ def main() -> None:
 
         start_xy = (s.start[0], s.start[1])
         goal_xy = (s.goal[0], s.goal[1])
+
+        clearance_m = ndimage.distance_transform_edt((~s.occupancy).astype(np.uint8)).astype(np.float32) * float(s.resolution)
 
         r_fast = _astar_grid(
             occupancy=s.occupancy,
@@ -135,6 +151,8 @@ def main() -> None:
         q = float(l_fast - l_slow)
         c = float(t_slow - t_fast)
         q_rel = float(q / max(l_slow, 1e-6))
+        clearance_min_fast = _path_min_clearance_m(r_fast["path"], clearance_m, s.resolution)
+        clearance_min_slow = _path_min_clearance_m(r_slow["path"], clearance_m, s.resolution)
 
         row = {
             "split": args.split,
@@ -157,6 +175,8 @@ def main() -> None:
             "search_slow_ms": float(r_slow["runtime_ms"]),
             "path_len_fast": float(_path_length(r_fast["path"])),
             "path_len_slow": float(_path_length(r_slow["path"])),
+            "clearance_min_fast": float(clearance_min_fast),
+            "clearance_min_slow": float(clearance_min_slow),
             "q": q,
             "c": c,
             "q_rel": q_rel,

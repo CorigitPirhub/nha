@@ -1,3 +1,13 @@
+# Repository Entry Points (Read This First)
+
+This repo contains multiple research tracks.
+
+- **Dual-Path Router (Top-Conf/Top-Journal mainline):** see `README_router.md`  
+  - Reproduce camera-ready bundle: `bash artifacts/router_camera_ready_v2/reproduce_main_tables_figures.sh`
+- **Nonholonomic Neural Heuristic for Hybrid A* (Ackermann):** the rest of this README.
+
+---
+
 # Nonholonomic Neural Heuristic for Hybrid A* (Ackermann)
 
 This project implements a full prototype for TRO-style iterative research:

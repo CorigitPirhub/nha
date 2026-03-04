@@ -1,0 +1,114 @@
+{
+  "version": "router_phase9_public_v1",
+  "seed": 20260302,
+  "source_root": "/home/zzy/TrajectoryPlanning/distill/data/benchmark",
+  "allocation": {
+    "test_mp": 2300,
+    "test_csm": 900,
+    "test_parasol": 18,
+    "calib_mp": 1500,
+    "calib_csm": 300,
+    "ood_map_ids": [
+      "mp_bugtrap_forest",
+      "mp_mazes",
+      "packed_018",
+      "packed_019"
+    ]
+  },
+  "splits": {
+    "train": {
+      "num_cases": 3400,
+      "source_counts": {
+        "mp": 3400
+      },
+      "difficulty_counts": {
+        "medium": 1265,
+        "hard": 1688,
+        "easy": 447
+      },
+      "scenario_counts": {
+        "alternating_gaps": 414,
+        "bugtrap_forest": 437,
+        "forest": 447,
+        "gaps_and_forest": 427,
+        "mazes": 406,
+        "multiple_bugtraps": 418,
+        "shifting_gaps": 417,
+        "single_bugtrap": 434
+      },
+      "ood_family_cases": 843,
+      "ood_family_ratio": 0.24794117647058825,
+      "ood_family_unique": 2,
+      "source_sha256": "df6202791f5234fdb34ccf86ac0e3327d5a34b8584c2885c28fc530eed018bd8",
+      "index_csv": "data/router_phase9_public_v1/train_index.csv"
+    },
+    "calib": {
+      "num_cases": 1800,
+      "source_counts": {
+        "csm": 300,
+        "mp": 1500
+      },
+      "difficulty_counts": {
+        "medium": 773,
+        "easy": 219,
+        "hard": 808
+      },
+      "scenario_counts": {
+        "csm_city_street": 300,
+        "alternating_gaps": 189,
+        "bugtrap_forest": 191,
+        "forest": 180,
+        "gaps_and_forest": 187,
+        "mazes": 200,
+        "multiple_bugtraps": 190,
+        "shifting_gaps": 198,
+        "single_bugtrap": 165
+      },
+      "ood_family_cases": 414,
+      "ood_family_ratio": 0.23,
+      "ood_family_unique": 4,
+      "source_sha256": "8abae7e181d42a037e5098fd9a5073f9beb2c7a631a459ab477b1d65844a0a2b",
+      "index_csv": "data/router_phase9_public_v1/calib_index.csv"
+    },
+    "test": {
+      "num_cases": 3218,
+      "source_counts": {
+        "csm": 900,
+        "mp": 2300,
+        "parasol": 18
+      },
+      "difficulty_counts": {
+        "medium": 1541,
+        "easy": 425,
+        "hard": 1252
+      },
+      "scenario_counts": {
+        "csm_city_street": 900,
+        "alternating_gaps": 297,
+        "bugtrap_forest": 272,
+        "forest": 273,
+        "gaps_and_forest": 286,
+        "mazes": 294,
+        "multiple_bugtraps": 292,
+        "shifting_gaps": 285,
+        "single_bugtrap": 301,
+        "alpha_puzzle": 1,
+        "bug_trap": 1,
+        "flange": 5,
+        "maze": 1,
+        "narrow_passage": 4,
+        "parasol_misc": 6
+      },
+      "ood_family_cases": 641,
+      "ood_family_ratio": 0.19919204474829086,
+      "ood_family_unique": 21,
+      "source_sha256": "443a29eefc86b391093ca868867e000e19e593c66e2a3614f3ebc0315f9ded13",
+      "index_csv": "data/router_phase9_public_v1/test_index.csv"
+    }
+  },
+  "phase9_dataset_gate_check": {
+    "test_cases_ge_3000": true,
+    "public_benchmarks_ge_3": true,
+    "ood_families_ge_2": true
+  }
+}

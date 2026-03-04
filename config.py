@@ -71,6 +71,10 @@ class TrainConfig:
     distance_weight_min: float = 0.25
     type_c_loss_weight: float = 1.0
     prediction_mode: str = "absolute"  # "absolute" | "residual"
+    model_name: str = "smallunet"
+    model_base: int = 64
+    use_context_channels: bool = False
+    use_temporal_context: bool = True
 
 
 @dataclass

@@ -621,6 +621,8 @@ def train_network(
         hybrid_obstacle_threshold_m=cfg.dataset.hybrid_obstacle_threshold_m,
         prediction_mode=cfg.train.prediction_mode,
         type_c_loss_weight=cfg.train.type_c_loss_weight,
+        use_context_channels=bool(getattr(cfg.train, "use_context_channels", False)),
+        use_temporal_context=bool(getattr(cfg.train, "use_temporal_context", True)),
     )
     val_ds = HeuristicFieldDataset(
         val_dir,
@@ -631,6 +633,8 @@ def train_network(
         hybrid_obstacle_threshold_m=cfg.dataset.hybrid_obstacle_threshold_m,
         prediction_mode=cfg.train.prediction_mode,
         type_c_loss_weight=cfg.train.type_c_loss_weight,
+        use_context_channels=bool(getattr(cfg.train, "use_context_channels", False)),
+        use_temporal_context=bool(getattr(cfg.train, "use_temporal_context", True)),
     )
 
     out_channels = int(train_ds[0]["target"].shape[0])
@@ -652,8 +656,8 @@ def train_network(
         pin_memory=(device.type == "cuda"),
     )
 
-    model_base = 64
-    model_name = "smallunet"
+    model_base = int(getattr(cfg.train, "model_base", 64))
+    model_name = str(getattr(cfg.train, "model_name", "smallunet")).lower()
     model = build_model(
         model_name=model_name,
         in_channels=in_channels,
