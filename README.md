@@ -1,14 +1,56 @@
-# Repository Entry Points (Read This First)
+# TrajectoryPlanning/distill — Repository Entry Points
 
-This repo contains multiple research tracks.
+This repo contains multiple research tracks. The **current submission mainline** is the **Dual-Path Router**.
 
-- **Dual-Path Router (Top-Conf/Top-Journal mainline):** see `README_router.md`  
-  - Reproduce camera-ready bundle: `bash artifacts/router_camera_ready_v2/reproduce_main_tables_figures.sh`
-- **Nonholonomic Neural Heuristic for Hybrid A* (Ackermann):** the rest of this README.
+## Dual-Path Router (Fast / Mid / Slow) — Camera-Ready (V2/V3)
+
+Given a planning query on a grid map, we **route** between planning “arms”:
+- **fast**: low latency, may incur quality loss,
+- **slow**: higher latency, treated as the *reference-quality* arm,
+- (extension) **mid**: an intermediate arm enabling **K≥3 portfolio routing**.
+
+The router is evaluated under a **frozen risk-control protocol**:
+- Protocol: `docs/router_protocol_v1.md` (defaults: `epsilon_rel=0.015`, `alpha=0.05`)
+- Primary metrics: `J` and violation probability `V`
+- Method framing: `docs/neurips_method_v1.md`
+- Theory (multi-arm + prior-shift certificate + two-stage monotone safety): `docs/router_theory_v3.md`
+- Project task book (status + evidence): `TASK.md`
+
+### One-Command Reproduction
+
+- **NeurIPS/ICML method-level bundle (V3, includes Step6~Step11):**
+  ```bash
+  bash artifacts/router_camera_ready_v3/reproduce_main_tables_figures.sh
+  ```
+- **Robotics/system bundle (V2, includes Step1/2/4/5):**
+  ```bash
+  bash artifacts/router_camera_ready_v2/reproduce_main_tables_figures.sh
+  ```
+
+### Container Reproduction
+
+```bash
+docker build -t router-camera-ready-v3 -f artifacts/router_camera_ready_v3/Dockerfile .
+docker run --rm -it router-camera-ready-v3
+```
+
+### Where To Look (Outputs)
+
+- Final bundle (V3): `outputs/final_v3/manifest.json`
+- Camera-ready audit (V3): `artifacts/router_camera_ready_v3/audit_summary.json`
+- Final bundle (V2): `outputs/final_v2/manifest.json`
+- Camera-ready audit (V2): `artifacts/router_camera_ready_v2/audit_summary.json`
+- Phase reports: `reports/`
+- Paper assets: `paper/tables_router_v*/`, `paper/figures_router_v*/`
+
+### Notes
+
+- Step 3 (real-hardware longrun) is a **Top-Journal** requirement and is not required for **Top-Conf** or **NeurIPS/ICML** readiness.
+- `README_router.md` is kept for backward compatibility; the router entry point is this README.
 
 ---
 
-# Nonholonomic Neural Heuristic for Hybrid A* (Ackermann)
+## Nonholonomic Neural Heuristic for Hybrid A* (Ackermann)
 
 This project implements a full prototype for TRO-style iterative research:
 

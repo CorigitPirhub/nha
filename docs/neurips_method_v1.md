@@ -1,7 +1,7 @@
 # Phase21 — NeurIPS/ICML Method Framing (V1)
 
 Status: `v1-draft`  
-Date: `2026-03-03`  
+Date: `2026-03-04`  
 Scope: Dual-Path Router (Fast/Slow) mainline — *method-level* framing without changing the underlying design logic.
 
 ---
@@ -168,12 +168,22 @@ Starting from the static router \(\pi_c\), define a probe router \(\pi_p\) that 
 Practical instantiation:
 1. Fit a gain model on calibration:
    \[
-   \widehat{\mathrm{gain}}(x)\approx \max(J_{\texttt{fast}}(x)-J_{\texttt{slow}}(x),0).
+   \hat g(x)\approx g(x)=J_{\texttt{fast}}(x)-J_{\texttt{slow}}(x).
    \]
-2. Define a probe score \(s(x)\) from \(\widehat{\mathrm{gain}}(x)\) and probe indicators.
-3. Among the cases where \(\pi_c(x)=\texttt{fast}\), flip those with highest \(s(x)\) to slow (top-\(k\) or threshold).
+2. Conformalize a **one-sided lower confidence bound (LCB)** on the signed gain (groupwise by difficulty):
+   \[
+   \mathrm{LCB}(x)=\hat g(x)-q_{g(x)}\quad\text{so that}\quad \mathbb P(g(x)\ge \mathrm{LCB}(x))\gtrsim 1-\alpha.
+   \]
+3. Under a mean-latency budget \(B\) (ms), select a subset of \(\pi_c\)-fast cases to flip to slow by a budgeted rule.
+   A simple strict-audit-stable instantiation is a greedy knapsack on **LCB gain per cost**:
+   \[
+   s(x)=\frac{\mathrm{LCB}(x)}{c(x)}\quad (c=T_{\texttt{slow}}-T_{\texttt{fast}}),
+   \]
+   then flip the top-\(k\) by \(s(x)\) (per difficulty bucket), with \(k\) chosen on `calib_val` only.
 
-Implementation: `utils/router_method_core.py:ProbeFlipRouter`.
+Implementation:
+- core abstraction: `utils/router_method_core.py:ProbeFlipRouter`.
+- strict end-to-end runner: `scripts/run_router_phase8_strict.py` with `--probe-selection-mode knapsack_lcb` (writes `probe_strict_v4_knapsack_lcb`).
 
 ---
 
@@ -246,7 +256,7 @@ Artifacts:
 The demo constructs a synthetic counterfactual table and shows:
 - forced-fast violates risk heavily,
 - static conformal routing meets risk budget,
-- probe flips further reduce \(J\) without increasing risk (monotone safety).
+- probe flips can reduce \(J\) without increasing risk on this toy example (monotone safety); in real tasks, monotone safety does **not** imply \(J\) improves.
 
 ---
 
@@ -295,3 +305,4 @@ Pointers to align against in Step 7 (direct baselines):
 1. The risk event only covers \(\Delta L_{\text{rel}}>\epsilon_{\text{rel}}\) as defined by the frozen protocol; it is not “all safety”.
 2. Split conformal requires exchangeability (or explicit shift handling); robust shift certificates require extra assumptions (see `docs/router_theory_v2.md`).
 3. Probe monotone safety only holds if probe never flips slow→fast.
+4. Probe is a **risk-safe escalation** mechanism; it may increase latency and therefore may not improve \(J\) unless the flipped cases avoid sufficiently large quality penalties.

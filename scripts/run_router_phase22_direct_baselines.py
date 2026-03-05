@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -10,6 +11,11 @@ import pandas as pd
 from scipy.stats import wilcoxon
 
 ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from utils.parquet_guard import INPUTS_SHA256_FILENAME, write_record
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,7 +29,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out-dir", type=Path, default=Path("outputs/router_phase22_direct_baselines_v1"))
     p.add_argument("--report-md", type=Path, default=Path("reports/router_phase22_direct_baselines_v1.md"))
     p.add_argument("--tables-dir", type=Path, default=Path("paper/tables_router_v7"))
-    p.add_argument("--enforce-gate", action="store_true", default=True)
+    p.add_argument("--enforce-gate", dest="enforce_gate", action="store_true", default=True)
+    p.add_argument(
+        "--no-enforce-gate",
+        dest="enforce_gate",
+        action="store_false",
+        help="Write artifacts but do not raise on gate failures (useful for strict audit runs).",
+    )
     return p.parse_args()
 
 
@@ -451,9 +463,14 @@ def _write_report(
     lines.append("")
     if not bool(summ["ours_vs_best_direct_significant_p_lt_0_01"]):
         lines.append("## Note")
-        lines.append(
-            "- Ours improves over the best direct baseline in mean `J`, but this difference is **not** significant at `p<0.01` under the frozen bootstrap protocol."
-        )
+        if float(summ["j_improve_vs_best_direct_mean"]) > 0.0:
+            lines.append(
+                "- Ours improves over the best direct baseline in mean `J`, but this difference is **not** significant at `p<0.01` under the frozen bootstrap protocol."
+            )
+        else:
+            lines.append(
+                "- Ours does **not** improve over the best direct baseline in mean `J` under this protocol; claims should be reframed accordingly."
+            )
         lines.append("- Claims should be reframed accordingly (see `paper/related_work_neurips_alignment.md`).")
     lines.append("")
     lines.append("## Artifacts")
@@ -868,6 +885,24 @@ def main() -> None:
     }
     stats_path.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
     _write_report(args.report_md, stats=stats)
+    input_parquets: dict[str, Path] = {
+        "phase9_counterfactual_calib_parquet": cf_calib_pq,
+        "phase9_counterfactual_test_parquet": cf_test_pq,
+        "phase9_static_features_calib_parquet": static_cal_pq,
+        "phase9_static_features_test_parquet": static_test_pq,
+        "phase9_probe_features_calib_parquet": probe_cal_pq,
+        "phase9_probe_features_test_parquet": probe_test_pq,
+    }
+    for seed in seeds:
+        seed_root = args.phase9_root / "router_eval" / "seeds" / f"seed_{seed}" / "mixed"
+        input_parquets[f"seed_{seed}_ours_probe_test_decisions_parquet"] = seed_root / "probe_strict_v2" / "test_decisions.parquet"
+        input_parquets[f"seed_{seed}_p5_conformal_test_decisions_parquet"] = (
+            seed_root / "conformal_strict_v2" / "test_decisions.parquet"
+        )
+        input_parquets[f"seed_{seed}_p5_conformal_calib_decisions_parquet"] = (
+            seed_root / "conformal_strict_v2" / "calib_decisions.parquet"
+        )
+    write_record(out_dir / INPUTS_SHA256_FILENAME, input_parquets)
 
     if bool(args.enforce_gate):
         bad = [k for k, v in gate.items() if not bool(v)]

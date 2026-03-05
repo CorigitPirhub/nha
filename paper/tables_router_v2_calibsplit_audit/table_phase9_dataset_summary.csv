@@ -1,0 +1,4 @@
+index,source_dataset,mean_delta_j_mean,mean_delta_j_std,mean_delta_j_min,mean_delta_j_max,direction_positive
+0,csm,0.0,0.0,0.0,0.0,True
+1,mp,-0.006859717432272273,0.015338794485001113,-0.03429858716136137,0.0,True
+2,parasol,0.0,0.0,0.0,0.0,True

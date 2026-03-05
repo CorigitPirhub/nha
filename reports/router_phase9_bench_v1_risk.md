@@ -1,8 +1,8 @@
 # Router Risk V1 (Phase 4)
 
 ## Core Setup
-- `selected_lambda`: `19.000000`
-- `T_ref` (median slow latency on calib): `2.330295 ms`
+- `selected_lambda`: `56.750000`
+- `T_ref` (median slow latency on calib): `6.875200 ms`
 - `beta`: `25.833333` (calibrated by median-scale match)
 - `q_pos_median` (calib): `0.038710`
 
@@ -13,12 +13,12 @@
 ## Metrics
 | split | avg_delta_l_rel | avg_latency_ms | J | J improve vs current_v2 | J improve vs default_router | easy fast | medium fast | hard fast |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| calib | -0.004915 | 0.879689 | 0.531598 | 50.148% | 56.471% | 0.7945 | 0.7607 | 0.7673 |
-| test | 0.006015 | 0.948808 | 0.817507 | 23.898% | 32.541% | 0.7741 | 0.7781 | 0.7596 |
+| calib | 0.006751 | 1.673698 | 0.703966 | 28.650% | 92.125% | 0.8950 | 0.8538 | 0.8366 |
+| test | 0.013822 | 38.418576 | 6.221456 | -537.357% | -161.351% | 0.9176 | 0.8650 | 0.8570 |
 
 ## Gate Check (P4)
 - `avg_delta_l_rel_le_1_5pct`: `True`
-- `J_improve_ge_5pct`: `True`
+- `J_improve_ge_5pct`: `False`
 - `stratified_fast_ratio_target`: `True`
 - `exp3_exp4_abs_dE_drift_le_0_5pct`: `True`
 

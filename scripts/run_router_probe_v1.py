@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from baselines.common import load_grid_sample
 from scripts.evaluate_baselines import _world_to_grid
+from utils.parquet_guard import INPUTS_SHA256_FILENAME, write_record
 
 
 @dataclass(frozen=True)
@@ -879,6 +880,17 @@ def main() -> None:
     }
     metrics_path = out_dir / "policy_metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    write_record(
+        out_dir / INPUTS_SHA256_FILENAME,
+        {
+            "calib_parquet": Path(args.calib_parquet),
+            "test_parquet": Path(args.test_parquet),
+            "phase5_calib_decisions": Path(args.phase5_calib_decisions),
+            "phase5_test_decisions": Path(args.phase5_test_decisions),
+            "static_features_calib": Path(args.static_features_calib),
+            "static_features_test": Path(args.static_features_test),
+        },
+    )
 
     _report(
         report_path=args.report_md,

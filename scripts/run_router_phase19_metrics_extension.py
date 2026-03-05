@@ -21,6 +21,7 @@ from baselines.common import load_grid_sample
 from config import DEFAULT_CONFIG
 from network.inference import NeuralHeuristicPredictor
 from scripts.evaluate_baselines import _astar_grid, _euclidean_field, _path_length, _resolve_2d_heuristic, _world_to_grid
+from utils.parquet_guard import INPUTS_SHA256_FILENAME, compare_record, mismatch_summary, write_record
 
 
 def parse_args() -> argparse.Namespace:
@@ -732,6 +733,30 @@ def main() -> None:
     cf_calib = common_dir / "counterfactual_calib.parquet"
     cf_calib_report = common_dir / "counterfactual_calib_report.json"
 
+    # Cache guard: bind extended counterfactual tables to the base counterfactual parquet inputs.
+    # If the base parquet(s) are overwritten, override --skip-counterfactual and regenerate.
+    record_path = out_dir / INPUTS_SHA256_FILENAME
+    input_parquets = {
+        "base_cf_calib_parquet": Path(args.base_cf_calib_parquet),
+        "base_cf_test_parquet": Path(args.base_cf_test_parquet),
+    }
+    if bool(args.skip_counterfactual):
+        regen = False
+        if (not cf_calib.exists()) or (not cf_test.exists()):
+            regen = True
+        if not regen:
+            try:
+                ok, cur, prev = compare_record(record_path, input_parquets)
+            except Exception as exc:
+                print(f"[phase19] cache check failed: {record_path} ({exc}); forcing full rerun.")
+                regen = True
+            else:
+                if not ok:
+                    print(f"[phase19] base parquet overwrite detected ({mismatch_summary(cur, prev)}); forcing full rerun.")
+                    regen = True
+        if regen:
+            args.skip_counterfactual = False
+
     if not bool(args.skip_counterfactual):
         _extend_counterfactual_from_base(
             base_parquet=Path(args.base_cf_calib_parquet),
@@ -765,6 +790,8 @@ def main() -> None:
     if not cf_test.exists():
         raise FileNotFoundError(cf_test)
     test_cf = pd.read_parquet(cf_test)
+
+    write_record(record_path, input_parquets)
 
     # Sanity: new fields must exist.
     secondary_cols = ["clearance_min_fast", "clearance_min_slow"]

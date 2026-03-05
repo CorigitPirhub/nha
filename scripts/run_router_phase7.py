@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from utils.parquet_guard import INPUTS_SHA256_FILENAME, compare_record, mismatch_summary
+
 
 @dataclass(frozen=True)
 class ClaimResult:
@@ -453,7 +455,98 @@ def _run_mixed_for_seed(
 
     risk_out = mixed_dir / "risk"
     risk_metrics = risk_out / "policy_metrics.json"
-    if force or not risk_metrics.exists():
+
+    conf_strict_out = mixed_dir / "conformal_strict"
+    conf_strict_metrics = conf_strict_out / "policy_metrics.json"
+
+    conf_target_out = mixed_dir / "conformal_target"
+    conf_target_metrics = conf_target_out / "policy_metrics.json"
+
+    probe_strict_out = mixed_dir / "probe_strict"
+    probe_strict_metrics = probe_strict_out / "policy_metrics.json"
+
+    probe_target_out = mixed_dir / "probe_target"
+    probe_target_metrics = probe_target_out / "policy_metrics.json"
+
+    full_rerun = bool(force)
+    if not full_rerun:
+        checks: list[tuple[str, Path, Path, dict[str, Path]]] = [
+            (
+                "risk",
+                risk_metrics,
+                risk_out / INPUTS_SHA256_FILENAME,
+                {"calib_parquet": calib_parquet, "test_parquet": test_parquet},
+            ),
+            (
+                "conformal_strict",
+                conf_strict_metrics,
+                conf_strict_out / INPUTS_SHA256_FILENAME,
+                {
+                    "calib_parquet": calib_parquet,
+                    "test_parquet": test_parquet,
+                    "features_calib": risk_out / "features_calib.parquet",
+                    "features_test": risk_out / "features_test.parquet",
+                    "phase4_calib_decisions": risk_out / "calib_decisions.parquet",
+                    "phase4_test_decisions": risk_out / "test_decisions.parquet",
+                },
+            ),
+            (
+                "conformal_target",
+                conf_target_metrics,
+                conf_target_out / INPUTS_SHA256_FILENAME,
+                {
+                    "calib_parquet": calib_parquet,
+                    "test_parquet": test_parquet,
+                    "features_calib": risk_out / "features_calib.parquet",
+                    "features_test": risk_out / "features_test.parquet",
+                    "phase4_calib_decisions": risk_out / "calib_decisions.parquet",
+                    "phase4_test_decisions": risk_out / "test_decisions.parquet",
+                },
+            ),
+            (
+                "probe_strict",
+                probe_strict_metrics,
+                probe_strict_out / INPUTS_SHA256_FILENAME,
+                {
+                    "calib_parquet": calib_parquet,
+                    "test_parquet": test_parquet,
+                    "phase5_calib_decisions": conf_strict_out / "calib_decisions.parquet",
+                    "phase5_test_decisions": conf_strict_out / "test_decisions.parquet",
+                    "static_features_calib": risk_out / "features_calib.parquet",
+                    "static_features_test": risk_out / "features_test.parquet",
+                },
+            ),
+            (
+                "probe_target",
+                probe_target_metrics,
+                probe_target_out / INPUTS_SHA256_FILENAME,
+                {
+                    "calib_parquet": calib_parquet,
+                    "test_parquet": test_parquet,
+                    "phase5_calib_decisions": conf_target_out / "calib_decisions.parquet",
+                    "phase5_test_decisions": conf_target_out / "test_decisions.parquet",
+                    "static_features_calib": risk_out / "features_calib.parquet",
+                    "static_features_test": risk_out / "features_test.parquet",
+                },
+            ),
+        ]
+        for name, metrics_path, record_path, inputs in checks:
+            if not metrics_path.exists():
+                continue
+            try:
+                ok, cur, prev = compare_record(record_path, inputs)
+            except Exception as exc:
+                print(f"[phase7] cache check failed for {name}: {record_path} ({exc}); forcing full rerun.")
+                full_rerun = True
+                break
+            if not ok:
+                print(
+                    f"[phase7] cache invalid for {name}: {record_path} ({mismatch_summary(cur, prev)}); forcing full rerun."
+                )
+                full_rerun = True
+                break
+
+    if full_rerun or not risk_metrics.exists():
         _run(
             [
                 sys.executable,
@@ -474,9 +567,7 @@ def _run_mixed_for_seed(
             log,
         )
 
-    conf_strict_out = mixed_dir / "conformal_strict"
-    conf_strict_metrics = conf_strict_out / "policy_metrics.json"
-    if force or not conf_strict_metrics.exists():
+    if full_rerun or not conf_strict_metrics.exists():
         _run_conformal_with_backoff(
             base_cmd=[
                 sys.executable,
@@ -506,9 +597,7 @@ def _run_mixed_for_seed(
             out_dir=conf_strict_out,
         )
 
-    conf_target_out = mixed_dir / "conformal_target"
-    conf_target_metrics = conf_target_out / "policy_metrics.json"
-    if force or not conf_target_metrics.exists():
+    if full_rerun or not conf_target_metrics.exists():
         _run_conformal_with_backoff(
             base_cmd=[
                 sys.executable,
@@ -538,9 +627,7 @@ def _run_mixed_for_seed(
             out_dir=conf_target_out,
         )
 
-    probe_strict_out = mixed_dir / "probe_strict"
-    probe_strict_metrics = probe_strict_out / "policy_metrics.json"
-    if force or not probe_strict_metrics.exists():
+    if full_rerun or not probe_strict_metrics.exists():
         _run_probe_with_backoff(
             base_cmd=[
                 sys.executable,
@@ -572,9 +659,7 @@ def _run_mixed_for_seed(
             out_dir=probe_strict_out,
         )
 
-    probe_target_out = mixed_dir / "probe_target"
-    probe_target_metrics = probe_target_out / "policy_metrics.json"
-    if force or not probe_target_metrics.exists():
+    if full_rerun or not probe_target_metrics.exists():
         _run_probe_with_backoff(
             base_cmd=[
                 sys.executable,

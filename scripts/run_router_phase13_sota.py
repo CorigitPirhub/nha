@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 import time
 from pathlib import Path
 
@@ -11,6 +12,11 @@ import pandas as pd
 from scipy.stats import wilcoxon
 
 ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from utils.parquet_guard import INPUTS_SHA256_FILENAME, write_record
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out-dir", type=Path, default=Path("outputs/router_phase13_sota_v1"))
     p.add_argument("--report-md", type=Path, default=Path("reports/router_phase13_sota_v1.md"))
     p.add_argument("--tables-dir", type=Path, default=Path("paper/tables_router_v3"))
-    p.add_argument("--enforce-gate", action="store_true", default=True)
+    p.add_argument("--enforce-gate", action=argparse.BooleanOptionalAction, default=True)
     return p.parse_args()
 
 
@@ -403,6 +409,18 @@ def main() -> None:
     stats_path = out_dir / "stats.json"
     stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
     _write_report(args.report_md, stats=stats, seed_df=seed_df, bench_df=bench_summary)
+    input_parquets: dict[str, Path] = {
+        "phase9_counterfactual_test_parquet": cf_test,
+        "phase9_risk_test_decisions_parquet": risk_test,
+        "phase9_risk_features_test_parquet": feat_test,
+    }
+    for seed in seeds:
+        seed_root = args.phase9_root / "router_eval" / "seeds" / f"seed_{seed}" / "mixed"
+        input_parquets[f"seed_{seed}_probe_test_decisions_parquet"] = seed_root / "probe_strict_v2" / "test_decisions.parquet"
+        input_parquets[f"seed_{seed}_conformal_test_decisions_parquet"] = (
+            seed_root / "conformal_strict_v2" / "test_decisions.parquet"
+        )
+    write_record(out_dir / INPUTS_SHA256_FILENAME, input_parquets)
 
     print(f"[phase13] stats={stats_path}")
     print(f"[phase13] report={args.report_md}")

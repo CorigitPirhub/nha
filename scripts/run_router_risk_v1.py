@@ -18,6 +18,8 @@ if str(ROOT) not in sys.path:
 from baselines.common import load_grid_sample
 from scripts.evaluate_baselines import _estimate_dual_map_complexity, _route_dual_map_path
 from scripts.run_router_diagnosis import _build_args_from_router_config, _default_router_args
+from utils.artifact_hash import sha256_file
+from utils.parquet_guard import INPUTS_SHA256_FILENAME, write_record
 
 
 @dataclass(frozen=True)
@@ -508,6 +510,9 @@ def main() -> None:
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    calib_sha = sha256_file(Path(args.calib_parquet))
+    test_sha = sha256_file(Path(args.test_parquet))
+
     args_default, args_current = _load_router_args(args.current_router_config)
     calib_df = _prepare_frame(
         cf_parquet=args.calib_parquet,
@@ -597,6 +602,17 @@ def main() -> None:
 
     metrics = {
         "version": "router_risk_v1",
+        "inputs": {
+            "dataset_root": str(Path(args.dataset_root)),
+            "calib_parquet": str(Path(args.calib_parquet)),
+            "test_parquet": str(Path(args.test_parquet)),
+            "calib_parquet_sha256": str(calib_sha),
+            "test_parquet_sha256": str(test_sha),
+            "current_router_config": str(Path(args.current_router_config)),
+            "current_router_config_sha256": sha256_file(Path(args.current_router_config))
+            if Path(args.current_router_config).exists()
+            else "",
+        },
         "objective": {
             "name": "risk_constrained_normalized",
             "formula": "J = mean(T/T_ref + beta * max(delta_l_rel, 0))",
@@ -638,6 +654,14 @@ def main() -> None:
     }
     metrics_path = out_dir / "policy_metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    write_record(
+        out_dir / INPUTS_SHA256_FILENAME,
+        {
+            "calib_parquet": Path(args.calib_parquet),
+            "test_parquet": Path(args.test_parquet),
+        },
+        sha256_map={"calib_parquet": calib_sha, "test_parquet": test_sha},
+    )
 
     _to_markdown_report(
         report_path=args.report_md,
@@ -661,4 +685,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

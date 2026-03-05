@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils.router_policy_v1 import sha256_file, write_json
+from utils.parquet_guard import INPUTS_SHA256_FILENAME, compare_record, mismatch_summary, write_record
 
 
 def parse_args() -> argparse.Namespace:
@@ -289,9 +290,25 @@ def main() -> None:
 
     policy_json = out_dir / "policy.json"
     sha_path = out_dir / "POLICY.sha256"
+    record_path = out_dir / INPUTS_SHA256_FILENAME
+    input_parquets = {
+        "calib_parquet": Path(args.calib_parquet),
+        "test_parquet": Path(args.test_parquet),
+        "static_features_calib": Path(args.static_features_calib),
+        "static_features_test": Path(args.static_features_test),
+        "probe_features_calib": Path(args.probe_features_calib),
+        "probe_features_test": Path(args.probe_features_test),
+    }
     if (not bool(args.force)) and policy_json.exists() and sha_path.exists():
-        print(f"[export_policy_v1] exists: {policy_json}")
-        return
+        try:
+            ok, cur, prev = compare_record(record_path, input_parquets)
+        except Exception as exc:
+            print(f"[export_policy_v1] cache check failed: {record_path} ({exc}); rebuilding.")
+        else:
+            if ok:
+                print(f"[export_policy_v1] exists: {policy_json}")
+                return
+            print(f"[export_policy_v1] input parquet changed ({mismatch_summary(cur, prev)}); rebuilding.")
 
     conf_src, probe_src = _load_source_policy(phase8_out=args.phase8_out, seed=int(args.policy_seed))
     conf_sel = conf_src["selected_policy"]
@@ -539,6 +556,7 @@ def main() -> None:
     write_json(policy_json, policy)
     policy_sha = sha256_file(policy_json)
     sha_path.write_text(f"{policy_sha}  policy.json\n", encoding="utf-8")
+    write_record(record_path, input_parquets)
 
     print(f"[export_policy_v1] wrote: {policy_json}")
     print(f"[export_policy_v1] sha256(policy.json)={policy_sha}")
@@ -547,4 +565,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

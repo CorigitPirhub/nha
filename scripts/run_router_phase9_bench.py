@@ -13,6 +13,10 @@ import pandas as pd
 from scipy.stats import wilcoxon
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from utils.parquet_guard import INPUTS_SHA256_FILENAME, compare_record, mismatch_summary
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,8 +36,100 @@ def parse_args() -> argparse.Namespace:
         default=0.01,
         help="Per-benchmark direction tolerance on mean_delta_j (allow tiny negative drift).",
     )
+
+    # Phase-8 strict selection knobs (forwarded to scripts/run_router_phase8_strict.py).
+    p.add_argument(
+        "--calib-split-mode",
+        type=str,
+        default="train_val",
+        choices=["none", "train_val"],
+        help="Forwarded to Phase-8 strict: how to split the calibration split for selection.",
+    )
+    p.add_argument(
+        "--calib-train-frac",
+        type=float,
+        default=0.60,
+        help="Forwarded to Phase-8 strict: fraction of calib used as calib_train when --calib-split-mode=train_val.",
+    )
+    p.add_argument(
+        "--calib-split-seed",
+        type=int,
+        default=20260302,
+        help="Forwarded to Phase-8 strict: deterministic seed for calib_train/calib_val split.",
+    )
+    p.add_argument(
+        "--conformal-select-on",
+        type=str,
+        default="calib",
+        choices=["calib", "test"],
+        help="Forwarded to Phase-8 strict: which split is used to select conformal hyperparameters.",
+    )
+    p.add_argument(
+        "--probe-search-on",
+        type=str,
+        default="calib",
+        choices=["calib", "test"],
+        help="Forwarded to Phase-8 strict: which split is used to search probe flip counts.",
+    )
+    p.add_argument(
+        "--phase8-strict-violation-target",
+        type=float,
+        default=0.20,
+        help="Forwarded to Phase-8 strict: strict_violation_target (used for final evaluation).",
+    )
+    p.add_argument(
+        "--phase8-strict-ci-upper-target",
+        type=float,
+        default=0.22,
+        help="Forwarded to Phase-8 strict: strict_ci_upper_target (used for final evaluation).",
+    )
+    p.add_argument(
+        "--phase8-strict-tune-violation-margin",
+        type=float,
+        default=0.14,
+        help="Forwarded to Phase-8 strict: margin subtracted from strict_violation_target when tuning on the selection split.",
+    )
+    p.add_argument(
+        "--phase8-strict-tune-ci-margin",
+        type=float,
+        default=0.13,
+        help="Forwarded to Phase-8 strict: margin subtracted from strict_ci_upper_target when tuning on the selection split.",
+    )
+    p.add_argument(
+        "--phase8-probe-include-cost-feature",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Forwarded to Phase-8 strict: include cost proxy `c` as a probe gain feature (cost-aware ranking).",
+    )
+    p.add_argument(
+        "--phase8-probe-selection-mode",
+        type=str,
+        default="grid_search",
+        choices=["grid_search", "conformal_lcb", "knapsack_lcb"],
+        help="Forwarded to Phase-8 strict: probe selection mode.",
+    )
+    p.add_argument(
+        "--phase8-probe-lcb-alpha",
+        type=float,
+        default=0.10,
+        help="Forwarded to Phase-8 strict: miscoverage alpha for conformal_lcb mode.",
+    )
+
+    # Report path overrides for subroutines (avoid overwriting v1 reports when running audits).
+    p.add_argument(
+        "--risk-report-md",
+        type=Path,
+        default=None,
+        help="Optional report path for Phase-4 risk. Default derives from --report-md.",
+    )
+    p.add_argument(
+        "--router-eval-report-md",
+        type=Path,
+        default=None,
+        help="Optional report path for Phase-8 router_eval. Default derives from --report-md.",
+    )
     p.add_argument("--force", action="store_true")
-    p.add_argument("--enforce-gate", action="store_true", default=True)
+    p.add_argument("--enforce-gate", action=argparse.BooleanOptionalAction, default=True)
     return p.parse_args()
 
 
@@ -183,7 +279,7 @@ def _run_risk_features(
                 "--out-dir",
                 str(risk_out),
                 "--report-md",
-                str(ROOT / "reports/router_phase9_bench_v1_risk.md"),
+                str(args.risk_report_md),
             ],
             log_path=log,
         )
@@ -221,17 +317,33 @@ def _run_router_eval(
                 "--probe-features-test",
                 str(out_dir / "common" / "probe_features_test.parquet"),
                 "--strict-violation-target",
-                "0.20",
+                str(float(args.phase8_strict_violation_target)),
                 "--strict-ci-upper-target",
-                "0.22",
+                str(float(args.phase8_strict_ci_upper_target)),
                 "--strict-tune-violation-margin",
-                "0.14",
+                str(float(args.phase8_strict_tune_violation_margin)),
                 "--strict-tune-ci-margin",
-                "0.13",
+                str(float(args.phase8_strict_tune_ci_margin)),
+                "--calib-split-mode",
+                str(args.calib_split_mode),
+                "--calib-train-frac",
+                str(float(args.calib_train_frac)),
+                "--calib-split-seed",
+                str(int(args.calib_split_seed)),
+                "--conformal-select-on",
+                str(args.conformal_select_on),
+                "--probe-search-on",
+                str(args.probe_search_on),
+                "--probe-include-cost-feature" if bool(args.phase8_probe_include_cost_feature) else "--no-probe-include-cost-feature",
+                "--probe-selection-mode",
+                str(args.phase8_probe_selection_mode),
+                "--probe-lcb-alpha",
+                str(float(args.phase8_probe_lcb_alpha)),
+                "--no-enforce-gate",
                 "--out-dir",
                 str(out_dir),
                 "--report-md",
-                str(ROOT / "reports/router_phase9_bench_v1_router_eval.md"),
+                str(args.router_eval_report_md),
             ],
             log_path=log,
         )
@@ -332,11 +444,63 @@ def main() -> None:
     t0 = time.perf_counter()
     seeds = _parse_seeds(args.seeds)
 
+    if args.risk_report_md is None:
+        args.risk_report_md = args.report_md.with_name(f"{args.report_md.stem}_risk.md")
+    if args.router_eval_report_md is None:
+        args.router_eval_report_md = args.report_md.with_name(f"{args.report_md.stem}_router_eval.md")
+
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     tables_dir = args.tables_dir
     tables_dir.mkdir(parents=True, exist_ok=True)
     run_log = out_dir / "run.log"
+
+    # Cache guard: bind downstream outputs to the counterfactual input parquets.
+    # If the input parquets are overwritten, force a full rerun to avoid stale skip logic.
+    if not bool(args.force):
+        common_dir = out_dir / "common"
+        calib_pq = common_dir / "router_counterfactual_calib.parquet"
+        test_pq = common_dir / "router_counterfactual_test.parquet"
+        force_reason = None
+
+        risk_out = common_dir / "risk"
+        risk_metrics = risk_out / "policy_metrics.json"
+        if risk_metrics.exists():
+            try:
+                ok, cur, prev = compare_record(
+                    risk_out / INPUTS_SHA256_FILENAME,
+                    {"calib_parquet": calib_pq, "test_parquet": test_pq},
+                )
+                if not ok:
+                    force_reason = f"risk inputs changed ({mismatch_summary(cur, prev)})"
+            except Exception as exc:
+                force_reason = f"risk cache check failed ({exc})"
+
+        router_eval_out = out_dir / "router_eval"
+        router_stats = router_eval_out / "stats.json"
+        if (force_reason is None) and router_stats.exists():
+            probe_cal = router_eval_out / "common" / "probe_features_calib.parquet"
+            probe_te = router_eval_out / "common" / "probe_features_test.parquet"
+            try:
+                ok, cur, prev = compare_record(
+                    router_eval_out / INPUTS_SHA256_FILENAME,
+                    {
+                        "calib_parquet": calib_pq,
+                        "test_parquet": test_pq,
+                        "static_features_calib": common_dir / "risk" / "features_calib.parquet",
+                        "static_features_test": common_dir / "risk" / "features_test.parquet",
+                        "probe_features_calib": probe_cal,
+                        "probe_features_test": probe_te,
+                    },
+                )
+                if not ok:
+                    force_reason = f"router_eval inputs changed ({mismatch_summary(cur, prev)})"
+            except Exception as exc:
+                force_reason = f"router_eval cache check failed ({exc})"
+
+        if force_reason is not None:
+            print(f"[phase9] parquet overwrite detected: {force_reason}; forcing full rerun.")
+            args.force = True
 
     manifest = _build_dataset(args, log=run_log)
     manifest_data = _load_json(manifest)
@@ -459,6 +623,20 @@ def main() -> None:
         "version": "router_phase9_bench_v1",
         "seeds": [int(s) for s in seeds],
         "runtime_hours": float((time.perf_counter() - t0) / 3600.0),
+        "router_eval_config": {
+            "calib_split_mode": str(args.calib_split_mode),
+            "calib_train_frac": float(args.calib_train_frac),
+            "calib_split_seed": int(args.calib_split_seed),
+            "conformal_select_on": str(args.conformal_select_on),
+            "probe_search_on": str(args.probe_search_on),
+            "phase8_strict_violation_target": float(args.phase8_strict_violation_target),
+            "phase8_strict_ci_upper_target": float(args.phase8_strict_ci_upper_target),
+            "phase8_strict_tune_violation_margin": float(args.phase8_strict_tune_violation_margin),
+            "phase8_strict_tune_ci_margin": float(args.phase8_strict_tune_ci_margin),
+            "phase8_probe_include_cost_feature": bool(args.phase8_probe_include_cost_feature),
+            "phase8_probe_selection_mode": str(args.phase8_probe_selection_mode),
+            "phase8_probe_lcb_alpha": float(args.phase8_probe_lcb_alpha),
+        },
         "counts": {
             "num_public_benchmarks": int(n_public_bench),
             "num_public_test_cases": int(n_public_cases),

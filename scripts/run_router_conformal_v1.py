@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from utils.parquet_guard import INPUTS_SHA256_FILENAME, write_record
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Phase-5 conformal safety gate for dual-path router.")
@@ -474,6 +476,17 @@ def main() -> None:
     }
     metrics_path = out_dir / "policy_metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    write_record(
+        out_dir / INPUTS_SHA256_FILENAME,
+        {
+            "calib_parquet": Path(args.calib_parquet),
+            "test_parquet": Path(args.test_parquet),
+            "features_calib": Path(args.features_calib),
+            "features_test": Path(args.features_test),
+            "phase4_calib_decisions": Path(args.phase4_calib_decisions),
+            "phase4_test_decisions": Path(args.phase4_test_decisions),
+        },
+    )
 
     report_cfg = {
         "search_on": str(args.search_on),
@@ -511,4 +524,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
