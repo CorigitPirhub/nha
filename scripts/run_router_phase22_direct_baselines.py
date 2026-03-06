@@ -21,6 +21,25 @@ from utils.parquet_guard import INPUTS_SHA256_FILENAME, write_record
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Phase-22 direct baselines: CDT/CRC-style decisions under frozen protocol.")
     p.add_argument("--phase9-root", type=Path, default=Path("outputs/router_phase9_bench_v1"))
+    p.add_argument(
+        "--ours-policy-dirname",
+        type=str,
+        default="probe_strict_v2",
+        help="Which per-seed policy directory to treat as 'ours' under phase9_root/router_eval/seeds/seed_*/mixed/ "
+        "(default: probe_strict_v2; recovery: probe_selective_v1 / probe_boundary_v1 / probe_risktrade_v1).",
+    )
+    p.add_argument(
+        "--ours-root",
+        type=Path,
+        default=None,
+        help="Optional external per-seed root for ours: <root>/seeds/seed_*/{test_decisions.parquet,policy_metrics.json}.",
+    )
+    p.add_argument(
+        "--ours-arm-table-test",
+        type=Path,
+        default=None,
+        help="Optional weighted-arm counterfactual test parquet used when ours emits route_arm instead of use_fast.",
+    )
     p.add_argument("--epsilon-rel", type=float, default=0.015)
     p.add_argument("--alpha", type=float, default=0.05)
     p.add_argument("--bootstrap-n", type=int, default=10000)
@@ -172,21 +191,105 @@ def _split_conformal_offsets_by_diff(
     return out
 
 
+def _resolve_policy_time_length(
+    df: pd.DataFrame,
+    *,
+    use_fast: np.ndarray | None = None,
+    route_arm: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    if route_arm is not None:
+        route_arm_arr = np.asarray(route_arm, dtype=str)
+        if route_arm_arr.shape[0] != len(df):
+            raise ValueError(f"route_arm shape mismatch: {route_arm_arr.shape} vs n={len(df)}")
+        route_arm = route_arm_arr
+        use_fast = None
+    elif use_fast is None:
+        raise ValueError("Exactly one of use_fast or route_arm must be provided.")
+
+    if route_arm is None:
+        uf = np.asarray(use_fast, dtype=bool)
+        t = np.where(uf, df["T_fast_ms"].to_numpy(dtype=np.float64), df["T_slow_ms"].to_numpy(dtype=np.float64))
+        l = np.where(uf, df["L_fast"].to_numpy(dtype=np.float64), df["L_slow"].to_numpy(dtype=np.float64))
+        return t.astype(np.float64), l.astype(np.float64), float(np.mean(uf.astype(np.float64)))
+
+    arms = np.asarray(route_arm, dtype=str)
+    t = np.full(len(df), np.nan, dtype=np.float64)
+    l = np.full(len(df), np.nan, dtype=np.float64)
+    for arm in sorted({str(x) for x in arms.tolist()}):
+        mask = arms == arm
+        if arm == "fast":
+            t_col = "T_fast_ms"
+            l_col = "L_fast"
+        elif arm == "slow":
+            t_col = "T_slow_ms"
+            l_col = "L_slow"
+        else:
+            tag = arm[3:] if arm.startswith("wa_") else arm
+            t_col = f"T_{tag}_ms"
+            l_col = f"L_{tag}"
+        if t_col not in df.columns or l_col not in df.columns:
+            raise KeyError(f"Missing weighted-arm columns for arm={arm}: {t_col}, {l_col}")
+        t[mask] = df.loc[mask, t_col].to_numpy(dtype=np.float64)
+        l[mask] = df.loc[mask, l_col].to_numpy(dtype=np.float64)
+    if np.isnan(t).any() or np.isnan(l).any():
+        raise RuntimeError("Unresolved route_arm values during policy evaluation.")
+    return t.astype(np.float64), l.astype(np.float64), float(np.mean((arms == "fast").astype(np.float64)))
+
+
+
+def _route_fast_mask(*, use_fast: np.ndarray | None = None, route_arm: np.ndarray | None = None) -> np.ndarray:
+    if route_arm is not None:
+        return (np.asarray(route_arm, dtype=str) == "fast").astype(np.float64)
+    if use_fast is None:
+        raise ValueError("Either use_fast or route_arm must be provided.")
+    return np.asarray(use_fast, dtype=np.float64)
+
+
+
+def _compute_probe_overhead_ms(
+    df: pd.DataFrame,
+    *,
+    use_fast: np.ndarray | None = None,
+    route_arm: np.ndarray | None = None,
+    probe_used: np.ndarray | None = None,
+    overhead_mode: str = "additive",
+) -> np.ndarray:
+    if probe_used is None:
+        return np.zeros(len(df), dtype=np.float64)
+    used = np.asarray(probe_used, dtype=np.float64)
+    if used.shape[0] != len(df):
+        raise ValueError(f"probe_used shape mismatch: {used.shape} vs n={len(df)}")
+    fast_mask = _route_fast_mask(use_fast=use_fast, route_arm=route_arm)
+    probe_runtime = df["probe_runtime_ms"].to_numpy(dtype=np.float64)
+    infer_slow = df["infer_slow_ms"].to_numpy(dtype=np.float64)
+    mode = str(overhead_mode).lower().strip()
+    if mode in {"trace_slow_overlap_infer", "trace_overlap_infer_slow_only", "overlap_infer_slow_only"}:
+        return np.maximum(probe_runtime - infer_slow, 0.0) * used * (1.0 - fast_mask)
+    if mode in {"prefix_reuse", "prefix_reuse_fast_only", "prefixreuse"}:
+        return probe_runtime * used * fast_mask
+    if mode in {"trace_slow_only", "trace_prefix_slow_only", "slow_only"}:
+        return probe_runtime * used * (1.0 - fast_mask)
+    return probe_runtime * used
+
+
+
 def _eval_policy(
     df: pd.DataFrame,
-    use_fast: np.ndarray,
+    use_fast: np.ndarray | None,
     t_ref: float,
     beta: float,
     epsilon_rel: float,
+    *,
+    route_arm: np.ndarray | None = None,
+    extra_time_ms: np.ndarray | None = None,
 ) -> dict:
-    uf = np.asarray(use_fast, dtype=bool)
-    t_fast = df["T_fast_ms"].to_numpy(dtype=np.float64)
-    t_slow = df["T_slow_ms"].to_numpy(dtype=np.float64)
-    l_fast = df["L_fast"].to_numpy(dtype=np.float64)
+    t, l, use_fast_ratio = _resolve_policy_time_length(df, use_fast=use_fast, route_arm=route_arm)
     l_slow = df["L_slow"].to_numpy(dtype=np.float64)
 
-    t = np.where(uf, t_fast, t_slow)
-    l = np.where(uf, l_fast, l_slow)
+    extra = np.zeros(len(df), dtype=np.float64) if extra_time_ms is None else np.asarray(extra_time_ms, dtype=np.float64)
+    if extra.shape[0] != len(df):
+        raise ValueError(f"extra_time_ms shape mismatch: {extra.shape} vs n={len(df)}")
+    t = t + extra
     drel = (l - l_slow) / np.maximum(l_slow, 1e-6)
     ji = t / max(float(t_ref), 1e-6) + float(beta) * np.maximum(drel, 0.0)
 
@@ -195,8 +298,9 @@ def _eval_policy(
         "V": float(np.mean(drel > float(epsilon_rel))),
         "J_i": ji.astype(np.float64),
         "drel": drel.astype(np.float64),
-        "use_fast_ratio": float(np.mean(uf.astype(np.float64))),
+        "use_fast_ratio": float(use_fast_ratio),
     }
+
 
 
 def _bootstrap_ci(arr: np.ndarray, n_boot: int, seed: int = 20260303) -> tuple[float, float]:
@@ -284,12 +388,10 @@ def _flip_budget_check(
     use_fast = np.asarray(use_fast, dtype=bool)
     diff = np.asarray(difficulty, dtype=str)
 
-    # Disallow p5-slow -> fast.
     bad = (~p5_use_fast) & use_fast
     if bool(np.any(bad)):
         return {"ok": False, "reason": "invalid_flip_slow_to_fast", "count": int(np.sum(bad))}
 
-    # Count flips (p5-fast -> slow) per difficulty.
     flips = p5_use_fast & (~use_fast)
     rows: list[dict] = []
     ok = True
@@ -300,6 +402,27 @@ def _flip_budget_check(
             ok = False
         rows.append({"difficulty": d, "flip_count": c, "cap": cap})
     return {"ok": bool(ok), "flip_total": int(np.sum(flips)), "per_diff": rows}
+
+
+
+def _weighted_slow_budget_check(
+    *,
+    route_arm: np.ndarray,
+    difficulty: np.ndarray,
+    k_slow_by_diff: dict[str, int],
+) -> dict[str, object]:
+    arms = np.asarray(route_arm, dtype=str)
+    diff = np.asarray(difficulty, dtype=str)
+    slow = arms == "slow"
+    rows: list[dict] = []
+    ok = True
+    for d in ("easy", "medium", "hard"):
+        cap = int(k_slow_by_diff.get(d, 0))
+        c = int(np.sum(slow & (diff == d)))
+        if c > cap:
+            ok = False
+        rows.append({"difficulty": d, "slow_count": c, "cap": cap})
+    return {"ok": bool(ok), "slow_total": int(np.sum(slow)), "per_diff": rows}
 
 
 def _train_crc_static_pupper_v1(
@@ -441,6 +564,8 @@ def _write_report(
     lines.append(f"- Runtime: `{s['runtime_hours']:.3f} h`")
     lines.append(f"- Seeds: `{s['seeds']}`")
     lines.append(f"- Best direct baseline: `{s['best_direct_baseline']}`")
+    if 'budget_parity_mode_consensus' in s:
+        lines.append(f"- Budget parity mode: `{s['budget_parity_mode_consensus']}`")
     lines.append("")
     lines.append("## Gate Check")
     for k, v in s["gate_check"].items():
@@ -507,6 +632,12 @@ def main() -> None:
         (probe_test_pq, "probe features test parquet"),
     ]:
         _ensure_exists(p, n)
+    if args.ours_arm_table_test is not None:
+        _ensure_exists(args.ours_arm_table_test, "ours weighted-arm test parquet")
+
+    ours_arm_test_df = None
+    if args.ours_arm_table_test is not None:
+        ours_arm_test_df = pd.read_parquet(args.ours_arm_table_test)
 
     cf_calib = pd.read_parquet(cf_calib_pq)
     cf_test = pd.read_parquet(cf_test_pq)
@@ -540,8 +671,9 @@ def main() -> None:
 
     for seed in seeds:
         seed_root = args.phase9_root / "router_eval" / "seeds" / f"seed_{seed}" / "mixed"
-        ours_dec_pq = seed_root / "probe_strict_v2" / "test_decisions.parquet"
-        ours_metrics_js = seed_root / "probe_strict_v2" / "policy_metrics.json"
+        ours_dir = (args.ours_root / "seeds" / f"seed_{seed}") if args.ours_root is not None else (seed_root / str(args.ours_policy_dirname))
+        ours_dec_pq = ours_dir / "test_decisions.parquet"
+        ours_metrics_js = ours_dir / "policy_metrics.json"
         p5_test_pq = seed_root / "conformal_strict_v2" / "test_decisions.parquet"
         p5_calib_pq = seed_root / "conformal_strict_v2" / "calib_decisions.parquet"
         for p, n in [
@@ -552,41 +684,87 @@ def main() -> None:
         ]:
             _ensure_exists(p, n)
 
-        ours_dec = pd.read_parquet(ours_dec_pq)[["sample_name", "use_fast"]].rename(columns={"use_fast": "use_fast_ours"})
+        ours_dec_df = pd.read_parquet(ours_dec_pq)
+        if "use_fast" not in ours_dec_df.columns and "route_arm" not in ours_dec_df.columns:
+            raise RuntimeError(f"Ours decisions must contain use_fast or route_arm (seed={seed}).")
+        cols = ["sample_name"]
+        merge_keys = ["sample_name"]
+        if "difficulty" in ours_dec_df.columns:
+            cols.append("difficulty")
+            merge_keys = ["sample_name", "difficulty"]
+        if "use_fast" in ours_dec_df.columns:
+            cols.append("use_fast")
+        if "route_arm" in ours_dec_df.columns:
+            cols.append("route_arm")
+        if "probe_used" in ours_dec_df.columns:
+            cols.append("probe_used")
+        ours_dec = ours_dec_df[cols].rename(
+            columns={"use_fast": "use_fast_ours", "route_arm": "route_arm_ours", "probe_used": "probe_used_ours"}
+        )
+        if "probe_used_ours" not in ours_dec.columns:
+            ours_dec["probe_used_ours"] = False if "route_arm_ours" in ours_dec.columns else True
         p5_test = pd.read_parquet(p5_test_pq)[["sample_name", "use_fast"]].rename(columns={"use_fast": "use_fast_p5"})
         p5_cal = pd.read_parquet(p5_calib_pq)[["sample_name", "use_fast"]].rename(columns={"use_fast": "use_fast_p5"})
         m = _load_json(ours_metrics_js)
         t_ref = float(m["objective"]["T_ref"])
         beta = float(m["objective"]["beta"])
+        overhead_mode = str(m.get("probe_overhead_mode", "additive")).lower().strip()
 
-        df_test = test_df.merge(ours_dec, on="sample_name", how="left").merge(p5_test, on="sample_name", how="left")
-        if df_test[["use_fast_ours", "use_fast_p5"]].isna().any().any():
+        df_test = test_df.merge(ours_dec, on=merge_keys, how="left").merge(p5_test, on="sample_name", how="left")
+        if "route_arm_ours" in df_test.columns:
+            if ours_arm_test_df is None:
+                raise RuntimeError("route_arm decisions require --ours-arm-table-test.")
+            df_test = df_test.merge(ours_arm_test_df, on=["sample_name", "difficulty"], how="left")
+        required = ["use_fast_p5", "probe_used_ours"]
+        if "use_fast_ours" in df_test.columns:
+            required.append("use_fast_ours")
+        if "route_arm_ours" in df_test.columns:
+            required.append("route_arm_ours")
+        if df_test[required].isna().any().any():
             raise RuntimeError(f"Missing ours/p5 decisions after merge (seed={seed}).")
         df_cal = calib_df.merge(p5_cal, on="sample_name", how="left")
         if df_cal["use_fast_p5"].isna().any():
             raise RuntimeError(f"Missing p5 calib decisions after merge (seed={seed}).")
 
+        ours_route_arm = df_test["route_arm_ours"].to_numpy(dtype=str) if "route_arm_ours" in df_test.columns else None
+        ours_use_fast = df_test["use_fast_ours"].to_numpy(dtype=bool) if "use_fast_ours" in df_test.columns else None
+        budget_mode = "flip_budget_fast_to_slow"
         k_slow_by_diff = m.get("selected_policy", {}).get("k_slow_by_difficulty", None)
-        if not isinstance(k_slow_by_diff, dict):
-            extra = df_test["use_fast_p5"].to_numpy(dtype=bool) & (~df_test["use_fast_ours"].to_numpy(dtype=bool))
-            diff = df_test["difficulty"].to_numpy(dtype=str)
-            k_slow_by_diff = {d: int(np.sum(extra & (diff == d))) for d in ["easy", "medium", "hard"]}
-        k_slow_by_diff = {k: int(v) for k, v in dict(k_slow_by_diff).items()}
-
-        ours_budget_check = _flip_budget_check(
-            p5_use_fast=df_test["use_fast_p5"].to_numpy(dtype=bool),
-            use_fast=df_test["use_fast_ours"].to_numpy(dtype=bool),
-            difficulty=df_test["difficulty"].to_numpy(dtype=str),
-            k_slow_by_diff=k_slow_by_diff,
-        )
+        if ours_route_arm is not None:
+            budget_mode = "weighted_search_slow_fallback_cap"
+            if not isinstance(k_slow_by_diff, dict):
+                diff = df_test["difficulty"].to_numpy(dtype=str)
+                slow = ours_route_arm == "slow"
+                k_slow_by_diff = {d: int(np.sum(slow & (diff == d))) for d in ["easy", "medium", "hard"]}
+            k_slow_by_diff = {k: int(v) for k, v in dict(k_slow_by_diff).items()}
+            ours_budget_check = _weighted_slow_budget_check(
+                route_arm=ours_route_arm,
+                difficulty=df_test["difficulty"].to_numpy(dtype=str),
+                k_slow_by_diff=k_slow_by_diff,
+            )
+            ours_budget_total = int(ours_budget_check.get("slow_total", 0))
+        else:
+            if not isinstance(k_slow_by_diff, dict):
+                extra = df_test["use_fast_p5"].to_numpy(dtype=bool) & (~df_test["use_fast_ours"].to_numpy(dtype=bool))
+                diff = df_test["difficulty"].to_numpy(dtype=str)
+                k_slow_by_diff = {d: int(np.sum(extra & (diff == d))) for d in ["easy", "medium", "hard"]}
+            k_slow_by_diff = {k: int(v) for k, v in dict(k_slow_by_diff).items()}
+            ours_budget_check = _flip_budget_check(
+                p5_use_fast=df_test["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast=df_test["use_fast_ours"].to_numpy(dtype=bool),
+                difficulty=df_test["difficulty"].to_numpy(dtype=str),
+                k_slow_by_diff=k_slow_by_diff,
+            )
+            ours_budget_total = int(ours_budget_check.get("flip_total", 0))
         budget_rows.append(
             {
                 "seed": int(seed),
+                "budget_parity_mode": str(budget_mode),
                 "k_slow_easy": int(k_slow_by_diff.get("easy", 0)),
                 "k_slow_medium": int(k_slow_by_diff.get("medium", 0)),
                 "k_slow_hard": int(k_slow_by_diff.get("hard", 0)),
-                "ours_flip_ok": bool(ours_budget_check.get("ok", False)),
-                "ours_flip_total": int(ours_budget_check.get("flip_total", 0)),
+                "ours_budget_ok": bool(ours_budget_check.get("ok", False)),
+                "ours_budget_total": int(ours_budget_total),
             }
         )
 
@@ -632,34 +810,51 @@ def main() -> None:
             budget_check_rows.append(r)
 
         policies = {
-            "ours_probe_strict_v2": df_test["use_fast_ours"].to_numpy(dtype=bool),
-            "p5_conformal_strict_v2": df_test["use_fast_p5"].to_numpy(dtype=bool),
-            "crc_static_pupper_v1": use_fast_crc,
-            "cdt_worstcase_j_v1": use_fast_cdt,
+            "ours": {
+                "use_fast": ours_use_fast,
+                "route_arm": ours_route_arm,
+                "uses_probe": bool(np.any(df_test["probe_used_ours"].to_numpy(dtype=bool))),
+            },
+            "p5_conformal_strict_v2": {
+                "use_fast": df_test["use_fast_p5"].to_numpy(dtype=bool),
+                "route_arm": None,
+                "uses_probe": False,
+            },
+            "crc_static_pupper_v1": {"use_fast": use_fast_crc, "route_arm": None, "uses_probe": False},
+            "cdt_worstcase_j_v1": {"use_fast": use_fast_cdt, "route_arm": None, "uses_probe": False},
         }
 
         evals: dict[str, dict] = {}
-        for name, uf in policies.items():
+        for name, spec in policies.items():
+            uf = spec["use_fast"]
+            route_arm = spec["route_arm"]
+            uses_probe = bool(spec["uses_probe"])
+            probe_lat = (
+                _compute_probe_overhead_ms(
+                    df_test,
+                    use_fast=uf,
+                    route_arm=route_arm,
+                    probe_used=df_test["probe_used_ours"].to_numpy(dtype=bool),
+                    overhead_mode=overhead_mode,
+                )
+                if uses_probe
+                else np.zeros(len(df_test), dtype=np.float64)
+            )
             evals[name] = _eval_policy(
                 df=df_test,
                 use_fast=uf,
+                route_arm=route_arm,
                 t_ref=t_ref,
                 beta=beta,
                 epsilon_rel=float(args.epsilon_rel),
+                extra_time_ms=(probe_lat if uses_probe else None),
             )
-
-            uses_probe = bool(name == "ours_probe_strict_v2")
-            route_lat = np.where(
-                np.asarray(uf, dtype=bool),
-                df_test["T_fast_ms"].to_numpy(dtype=np.float64),
-                df_test["T_slow_ms"].to_numpy(dtype=np.float64),
-            )
-            probe_lat = df_test["probe_runtime_ms"].to_numpy(dtype=np.float64) if uses_probe else np.zeros(len(df_test), dtype=np.float64)
+            route_lat, _, _ = _resolve_policy_time_length(df_test, use_fast=uf, route_arm=route_arm)
             total_lat = route_lat + probe_lat
 
-            if name == "ours_probe_strict_v2":
+            if name == "ours":
                 fam = "ours"
-                info = "probe+conformal"
+                info = "weighted_search_tree_zero_probe" if route_arm is not None else "probe+conformal"
             elif name == "p5_conformal_strict_v2":
                 fam = "p5"
                 info = "conformal_only"
@@ -678,6 +873,7 @@ def main() -> None:
                     "use_fast_ratio": float(evals[name]["use_fast_ratio"]),
                     "route_latency_mean_ms": float(np.mean(route_lat)),
                     "probe_latency_mean_ms": float(np.mean(probe_lat)),
+                    "probe_trigger_rate": float(np.mean(df_test["probe_used_ours"].to_numpy(dtype=np.float64))) if uses_probe else 0.0,
                     "total_latency_mean_ms": float(np.mean(total_lat)),
                     "t_ref": float(t_ref),
                     "beta": float(beta),
@@ -733,7 +929,7 @@ def main() -> None:
     pooled_delta_j: list[np.ndarray] = []
     bench_rows: list[dict] = []
     for seed in seeds:
-        ours = seed_evals[int(seed)]["ours_probe_strict_v2"]
+        ours = seed_evals[int(seed)]["ours"]
         base = seed_evals[int(seed)][best_direct_method]
         j_improve = float((base["J_mean"] - ours["J_mean"]) / max(abs(base["J_mean"]), 1e-12))
         risk_delta_pct = float((ours["V"] - base["V"]) * 100.0)
@@ -794,7 +990,10 @@ def main() -> None:
 
     budget_df = pd.DataFrame(budget_rows).sort_values("seed").reset_index(drop=True)
     budget_check_df = pd.DataFrame(budget_check_rows).sort_values(["method", "seed"]).reset_index(drop=True)
-    budget_ok = bool(budget_df["ours_flip_ok"].all()) and (bool(budget_check_df["ok"].all()) if len(budget_check_df) else False)
+    budget_ok = bool(budget_df["ours_budget_ok"].all()) and (bool(budget_check_df["ok"].all()) if len(budget_check_df) else False)
+    budget_mode_consensus = (
+        str(budget_df["budget_parity_mode"].mode().iloc[0]) if len(budget_df) and "budget_parity_mode" in budget_df.columns else "unknown"
+    )
 
     ours_sig = bool(float(p_boot) < 0.01 and float(ci_lo) > 0.0 and bool(bench_summary["direction_consistent"].all()))
     bd_sig = bool(float(p_boot_bd) < 0.01 and float(ci_lo_bd) > 0.0)
@@ -849,6 +1048,10 @@ def main() -> None:
         "version": "router_phase22_direct_baselines_v1",
         "runtime_hours": float((time.perf_counter() - t0) / 3600.0),
         "seeds": seeds,
+        "ours_policy_dirname": str(args.ours_policy_dirname),
+        "ours_root": (str(args.ours_root) if args.ours_root is not None else None),
+        "ours_arm_table_test": (str(args.ours_arm_table_test) if args.ours_arm_table_test is not None else None),
+        "budget_parity_mode_consensus": str(budget_mode_consensus),
         "best_direct_baseline": best_direct_method,
         "counts": {
             "direct_baselines": direct_methods,
@@ -895,13 +1098,17 @@ def main() -> None:
     }
     for seed in seeds:
         seed_root = args.phase9_root / "router_eval" / "seeds" / f"seed_{seed}" / "mixed"
-        input_parquets[f"seed_{seed}_ours_probe_test_decisions_parquet"] = seed_root / "probe_strict_v2" / "test_decisions.parquet"
+        ours_dir = (args.ours_root / "seeds" / f"seed_{seed}") if args.ours_root is not None else (seed_root / str(args.ours_policy_dirname))
+        input_parquets[f"seed_{seed}_ours_test_decisions_parquet"] = ours_dir / "test_decisions.parquet"
+        input_parquets[f"seed_{seed}_ours_policy_metrics_json"] = ours_dir / "policy_metrics.json"
         input_parquets[f"seed_{seed}_p5_conformal_test_decisions_parquet"] = (
             seed_root / "conformal_strict_v2" / "test_decisions.parquet"
         )
         input_parquets[f"seed_{seed}_p5_conformal_calib_decisions_parquet"] = (
             seed_root / "conformal_strict_v2" / "calib_decisions.parquet"
         )
+    if args.ours_arm_table_test is not None:
+        input_parquets["ours_arm_table_test_parquet"] = args.ours_arm_table_test
     write_record(out_dir / INPUTS_SHA256_FILENAME, input_parquets)
 
     if bool(args.enforce_gate):

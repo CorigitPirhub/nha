@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+from sklearn.tree import DecisionTreeClassifier
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -50,11 +51,38 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epsilon-rel", type=float, default=0.015)
 
     # P8 strict targets.
-    p.add_argument("--strict-violation-target", type=float, default=0.08)
-    p.add_argument("--strict-ci-upper-target", type=float, default=0.09)
-    p.add_argument("--strict-tune-violation-margin", type=float, default=0.02)
-    p.add_argument("--strict-tune-ci-margin", type=float, default=0.015)
-    p.add_argument("--strict-conformal-alpha-grid", type=str, default="0.65,0.7,0.75,0.8,0.85,0.9")
+    p.add_argument(
+        "--strict-violation-target",
+        type=float,
+        default=0.05,
+        help="Target upper bound on violation probability V = P(use_fast & q_rel > eps_rel). "
+        "Must match the frozen protocol alpha (default: 0.05).",
+    )
+    p.add_argument(
+        "--strict-ci-upper-target",
+        type=float,
+        default=0.05,
+        help="Target upper bound on the 95% Wilson CI upper for the violation rate. "
+        "Use the same value as --strict-violation-target for a paper-grade risk bound.",
+    )
+    p.add_argument(
+        "--strict-tune-violation-margin",
+        type=float,
+        default=0.01,
+        help="Safety margin subtracted from --strict-violation-target when tuning on the selection split.",
+    )
+    p.add_argument(
+        "--strict-tune-ci-margin",
+        type=float,
+        default=0.01,
+        help="Safety margin subtracted from --strict-ci-upper-target when tuning on the selection split.",
+    )
+    p.add_argument(
+        "--strict-conformal-alpha-grid",
+        type=str,
+        default="0.10,0.15,0.20,0.25,0.30,0.35",
+        help="Grid over one-sided split-conformal miscoverage alpha for p_upper(x) = clip(p_hat + q_d, 0, 1).",
+    )
     p.add_argument("--strict-score-a-grid", type=str, default="0.75,1.0,1.25")
     p.add_argument("--strict-score-b-grid", type=str, default="0.0,0.5,1.0")
     p.add_argument("--strict-search-window", type=int, default=90)
@@ -91,8 +119,8 @@ def parse_args() -> argparse.Namespace:
         "--probe-include-cost-feature",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="If enabled, include the cost proxy `c` (slow-fast runtime delta, from counterfactual tables) as a feature "
-        "for the probe gain predictor. This makes the probe selection cost-aware and avoids flipping extremely expensive cases.",
+        help="If enabled, include a *predicted* cost proxy c_hat(x) (estimated from deployable static features) "
+        "as a probe gain feature. Avoids any oracle per-sample cost leakage (do NOT use counterfactual c at routing time).",
     )
     p.add_argument(
         "--calib-split-mode",
@@ -141,6 +169,108 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gbr-max-depth", type=int, default=3)
     p.add_argument("--gbr-subsample", type=float, default=0.9)
 
+    # Step12-R recovery variants (strict semantics).
+    p.add_argument(
+        "--emit-probe-voi-gate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Emit a selective-probe policy (probe_selective_v1) that gates probe execution by a conformal value-of-information rule.",
+    )
+    p.add_argument(
+        "--probe-voi-alpha",
+        type=float,
+        default=0.10,
+        help="Miscoverage level for one-sided split-conformal bounds used in the VoI gate (LCB on gain, UCB on probe cost).",
+    )
+    p.add_argument(
+        "--probe-voi-threshold-quantiles",
+        type=int,
+        default=81,
+        help="Number of quantile thresholds evaluated on calib_val to pick the VoI gate threshold (calib-only selection).",
+    )
+
+    p.add_argument(
+        "--emit-probe-boundary-gate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Emit a boundary-probe policy (probe_boundary_v1) that runs probe only when the P5 score is near its threshold.",
+    )
+    p.add_argument(
+        "--probe-boundary-quantiles",
+        type=int,
+        default=41,
+        help="Number of distance-to-threshold quantiles evaluated on calib_val to pick the boundary gate width (calib-only selection).",
+    )
+
+    p.add_argument(
+        "--emit-probe-risktrade",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Emit a risk-trading probe policy (probe_risktrade_v1) that allows both slow->fast and fast->slow changes under a conformal risk budget.",
+    )
+    p.add_argument(
+        "--probe-risktrade-alpha",
+        type=float,
+        default=0.10,
+        help="Miscoverage level for split-conformal bounds in risk-trading (LCB on benefit, UCB on violation probability).",
+    )
+    p.add_argument(
+        "--probe-risktrade-threshold-quantiles",
+        type=int,
+        default=81,
+        help="Number of score quantiles evaluated on calib_val to pick the risk-trade ratio threshold (calib-only selection).",
+    )
+
+    p.add_argument(
+        "--emit-probe-prefixreuse",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Emit a prefix-reuse accounting variant (probe_prefixreuse_v1): probe cost is charged only when the final route is fast "
+        "(the probe is discarded). When the final route is slow, probe compute is assumed reused as a slow-prefix and not added on top.",
+    )
+
+    # Step12-R2 recovery variants (strict semantics; no test tuning).
+    p.add_argument(
+        "--emit-trace-switch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Emit a trace-switch policy (trace_switch_v1): use fast-prefix trace features (the existing probe_* A* prefix stats) "
+        "to decide switching from the P5-fast branch to slow. Strict accounting: the trace cost is charged only when the final route "
+        "is slow (sequential switch); when the final route is fast, the trace is treated as a fast-prefix and not added on top.",
+    )
+    p.add_argument(
+        "--trace-switch-alpha",
+        type=float,
+        default=0.10,
+        help="Miscoverage level for one-sided split-conformal LCB on predicted net J-improvement (calib_val calibration only).",
+    )
+    p.add_argument(
+        "--trace-switch-threshold-quantiles",
+        type=int,
+        default=81,
+        help="Number of quantile thresholds evaluated on calib_val to pick the trace-switch threshold (calib-only selection).",
+    )
+    p.add_argument(
+        "--trace-switch-overhead-mode",
+        type=str,
+        default="trace_slow_only",
+        choices=["trace_slow_only", "trace_slow_overlap_infer"],
+        help="Strict accounting mode for trace-switch overhead. "
+        "`trace_slow_only`: charge full probe/trace runtime when switching to slow. "
+        "`trace_slow_overlap_infer`: assume probe/trace (CPU) overlaps with slow inference (GPU) and charge only max(0, probe_ms-infer_slow_ms) when switching to slow.",
+    )
+
+    p.add_argument(
+        "--emit-partition-crc",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Emit a learned partitioned CRC policy (partition_crc_v1): learn a deployable partitioner on calib_train, "
+        "compute split-conformal upper offsets within partitions on calib_val, then run the same strict tau-by-difficulty "
+        "search as conformal_strict_v2. No probe is used (probe_used=false).",
+    )
+    p.add_argument("--partition-crc-max-leaves", type=int, default=8, help="Max leaf nodes for the partitioner tree.")
+    p.add_argument("--partition-crc-min-leaf", type=int, default=80, help="Min samples per partition leaf (stability).")
+
     p.add_argument("--out-dir", type=Path, default=Path("outputs/router_phase8_strict_v1"))
     p.add_argument("--report-md", type=Path, default=Path("reports/router_phase8_strict_v1.md"))
     p.add_argument("--enforce-gate", action=argparse.BooleanOptionalAction, default=True)
@@ -167,6 +297,871 @@ def _parse_grid(raw: str) -> list[float]:
     if not vals:
         raise ValueError(f"Empty grid: {raw}")
     return vals
+
+
+def _one_sided_residual_quantile_overestimate(res: np.ndarray, alpha: float) -> float:
+    res = np.asarray(res, dtype=np.float64)
+    n = int(res.size)
+    if n <= 0:
+        return 0.0
+    level = float(np.ceil((n + 1) * (1.0 - float(alpha))) / n)
+    level = float(np.clip(level, 0.0, 1.0))
+    try:
+        q = float(np.quantile(res, level, method="higher"))
+    except TypeError:  # pragma: no cover
+        q = float(np.quantile(res, level, interpolation="higher"))
+    return q
+
+
+def _static_gate_design_matrix(df: pd.DataFrame, *, ref_cols: pd.Index | None = None) -> pd.DataFrame:
+    feat_num = [
+        "line_block_ratio",
+        "local_occ_ratio",
+        "global_occ_ratio",
+        "distance_ratio",
+        "complexity_score",
+        "los_clear",
+        "L_fast",
+        "T_fast_ms",
+        "search_fast_ms",
+        "path_len_fast",
+    ]
+    feat_cat = ["difficulty"]
+    missing = [c for c in (feat_num + feat_cat) if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"Missing gate features: {missing}")
+    x = pd.get_dummies(df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
+    if ref_cols is not None:
+        x = x.reindex(columns=ref_cols, fill_value=0)
+    return x
+
+
+def _route_only_J(
+    df: pd.DataFrame,
+    use_fast: np.ndarray,
+    *,
+    t_ref: float,
+    beta: float,
+) -> np.ndarray:
+    uf = np.asarray(use_fast, dtype=bool)
+    t_fast = df["T_fast_ms"].to_numpy(dtype=np.float64)
+    t_slow = df["T_slow_ms"].to_numpy(dtype=np.float64)
+    q_pos = np.maximum(df["q_rel"].to_numpy(dtype=np.float64), 0.0)
+    j_fast = t_fast / max(float(t_ref), 1e-9) + float(beta) * q_pos
+    j_slow = t_slow / max(float(t_ref), 1e-9)
+    return np.where(uf, j_fast, j_slow).astype(np.float64)
+
+
+def _probe_cost_norm(df: pd.DataFrame, *, t_ref: float) -> np.ndarray:
+    if "probe_runtime_ms" not in df.columns:
+        raise RuntimeError("Missing probe_runtime_ms for probe cost accounting.")
+    return (np.clip(df["probe_runtime_ms"].to_numpy(dtype=np.float64), 0.0, None) / max(float(t_ref), 1e-9)).astype(np.float64)
+
+
+def _write_policy_meta(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _save_policy_decisions(
+    out_dir: Path,
+    *,
+    split_name: str,
+    df: pd.DataFrame,
+    use_fast: np.ndarray,
+    probe_used: np.ndarray,
+    extra_cols: dict[str, np.ndarray] | None = None,
+) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = pd.DataFrame(
+        {
+            "sample_name": df["sample_name"].astype(str),
+            "difficulty": df["difficulty"].astype(str),
+            "use_fast": np.asarray(use_fast, dtype=bool),
+            "probe_used": np.asarray(probe_used, dtype=bool),
+        }
+    )
+    out["route"] = np.where(out["use_fast"].to_numpy(dtype=bool), "fast", "slow")
+    if extra_cols:
+        for k, v in extra_cols.items():
+            out[str(k)] = np.asarray(v)
+    path = out_dir / f"{split_name}_decisions.parquet"
+    out.to_parquet(path, index=False)
+    return path
+
+
+def _run_probe_voi_gate_seed(
+    *,
+    seed: int,
+    calib_train_df: pd.DataFrame,
+    calib_val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    use_fast_p5_train: np.ndarray,
+    use_fast_p5_val: np.ndarray,
+    use_fast_p5_test: np.ndarray,
+    use_fast_probe_train: np.ndarray,
+    use_fast_probe_val: np.ndarray,
+    use_fast_probe_test: np.ndarray,
+    t_ref: float,
+    beta: float,
+    alpha: float,
+    threshold_quantiles: int,
+    out_dir: Path,
+    input_hashes: dict[str, str],
+    calib_split_cfg: dict[str, object],
+) -> dict:
+    # Targets: route-only gain and probe overhead cost in normalized units.
+    j_p5_train = _route_only_J(calib_train_df, use_fast_p5_train, t_ref=t_ref, beta=beta)
+    j_probe_train = _route_only_J(calib_train_df, use_fast_probe_train, t_ref=t_ref, beta=beta)
+    y_gain_train = (j_p5_train - j_probe_train).astype(np.float64)
+    y_cost_train = _probe_cost_norm(calib_train_df, t_ref=t_ref)
+
+    x_train = _static_gate_design_matrix(calib_train_df)
+    reg_gain = GradientBoostingRegressor(
+        random_state=int(seed),
+        n_estimators=300,
+        learning_rate=0.05,
+        max_depth=3,
+        subsample=0.9,
+    )
+    reg_cost = GradientBoostingRegressor(
+        random_state=int(seed) + 1000,
+        n_estimators=250,
+        learning_rate=0.05,
+        max_depth=3,
+        subsample=0.9,
+    )
+    reg_gain.fit(x_train, y_gain_train)
+    reg_cost.fit(x_train, y_cost_train)
+
+    def _predict(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        x = _static_gate_design_matrix(df, ref_cols=x_train.columns)
+        pred_gain = reg_gain.predict(x).astype(np.float64)
+        pred_cost = np.clip(reg_cost.predict(x).astype(np.float64), 0.0, None)
+        return pred_gain.astype(np.float64), pred_cost.astype(np.float64)
+
+    # Calib-val: compute true quantities for threshold selection.
+    j_p5_val = _route_only_J(calib_val_df, use_fast_p5_val, t_ref=t_ref, beta=beta)
+    j_probe_val = _route_only_J(calib_val_df, use_fast_probe_val, t_ref=t_ref, beta=beta)
+    gain_val = (j_p5_val - j_probe_val).astype(np.float64)
+    cost_val = _probe_cost_norm(calib_val_df, t_ref=t_ref)
+    pred_gain_val, pred_cost_val = _predict(calib_val_df)
+    q_gain = _one_sided_residual_quantile_overestimate(np.maximum(pred_gain_val - gain_val, 0.0), alpha=float(alpha))
+    q_cost = _one_sided_residual_quantile_overestimate(np.maximum(cost_val - pred_cost_val, 0.0), alpha=float(alpha))
+    lcb_gain_val = (pred_gain_val - float(q_gain)).astype(np.float64)
+    ucb_cost_val = (pred_cost_val + float(q_cost)).astype(np.float64)
+    net_lcb_val = (lcb_gain_val - ucb_cost_val).astype(np.float64)
+
+    # Pick a threshold on calib_val only (strict). Objective: maximize mean net gain vs P5.
+    eligible_val = np.asarray(use_fast_p5_val, dtype=bool)
+    cand = np.unique(
+        np.quantile(
+            net_lcb_val[eligible_val] if np.any(eligible_val) else net_lcb_val,
+            np.linspace(0.0, 1.0, int(max(threshold_quantiles, 3))),
+            method="higher",
+        )
+    )
+    best = None
+    for thr in cand.tolist() + [float("inf")]:
+        mask = eligible_val & (net_lcb_val > float(thr))
+        net_gain = float(np.mean((gain_val - cost_val) * mask.astype(np.float64)))
+        probe_rate = float(np.mean(mask.astype(np.float64)))
+        # Tie-break: prefer less probing.
+        key = (net_gain, -probe_rate, -float(thr))
+        if best is None or key > best["key"]:
+            best = {"key": key, "thr": float(thr), "net_gain": net_gain, "probe_rate": probe_rate}
+    assert best is not None
+    thr = float(best["thr"])
+
+    def _apply(df: pd.DataFrame, use_fast_p5: np.ndarray, use_fast_probe: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        j_p5 = _route_only_J(df, use_fast_p5, t_ref=t_ref, beta=beta)
+        j_probe = _route_only_J(df, use_fast_probe, t_ref=t_ref, beta=beta)
+        gain = (j_p5 - j_probe).astype(np.float64)
+        cost = _probe_cost_norm(df, t_ref=t_ref)
+        pred_gain, pred_cost = _predict(df)
+        net_lcb = ((pred_gain - float(q_gain)) - (pred_cost + float(q_cost))).astype(np.float64)
+        eligible = np.asarray(use_fast_p5, dtype=bool)
+        probe_used = (eligible & (net_lcb > thr)).astype(bool)
+        use_fast = np.where(probe_used, np.asarray(use_fast_probe, dtype=bool), np.asarray(use_fast_p5, dtype=bool))
+        return use_fast.astype(bool), probe_used.astype(bool), gain, cost, net_lcb
+
+    use_cal, probe_used_cal, gain_cal, cost_cal, _net_lcb_cal = _apply(calib_train_df, use_fast_p5_train, use_fast_probe_train)
+    use_val, probe_used_val, _gain_val, _cost_val, _net_lcb_val2 = _apply(calib_val_df, use_fast_p5_val, use_fast_probe_val)
+    use_test, probe_used_test, gain_test, cost_test, net_lcb_test = _apply(test_df, use_fast_p5_test, use_fast_probe_test)
+
+    j_test = _route_only_J(test_df, use_test, t_ref=t_ref, beta=beta) + cost_test * probe_used_test.astype(np.float64)
+    j_p5_test = _route_only_J(test_df, use_fast_p5_test, t_ref=t_ref, beta=beta)
+    delta_j = (j_p5_test - j_test).astype(np.float64)
+
+    out = out_dir
+    cal_dec = _save_policy_decisions(
+        out,
+        split_name="calib",
+        df=pd.concat([calib_train_df, calib_val_df], ignore_index=True),
+        use_fast=np.concatenate([use_cal, use_val]),
+        probe_used=np.concatenate([probe_used_cal, probe_used_val]),
+    )
+    test_dec = _save_policy_decisions(
+        out,
+        split_name="test",
+        df=test_df,
+        use_fast=use_test,
+        probe_used=probe_used_test,
+        extra_cols={
+            "net_lcb": net_lcb_test.astype(np.float64),
+            "net_gain": (gain_test - cost_test).astype(np.float64),
+            "gain_route_only": gain_test,
+            "probe_cost_norm": cost_test,
+        },
+    )
+
+    meta = {
+        "version": "probe_selective_v1",
+        "seed": int(seed),
+        "inputs": dict(input_hashes),
+        "calib_split": dict(calib_split_cfg),
+        "objective": {"T_ref": float(t_ref), "beta": float(beta)},
+        "voi_gate": {
+            "alpha": float(alpha),
+            "q_gain": float(q_gain),
+            "q_cost": float(q_cost),
+            "threshold": float(thr),
+            "val_net_gain_mean": float(best["net_gain"]),
+            "val_probe_rate": float(best["probe_rate"]),
+        },
+        "test_metrics": {
+            "probe_trigger_rate": float(np.mean(probe_used_test.astype(np.float64))),
+            "delta_j_mean_vs_p5": float(np.mean(delta_j)),
+            "delta_j_median_vs_p5": float(np.median(delta_j)),
+            "probe_cost_norm_mean": float(np.mean(cost_test * probe_used_test.astype(np.float64))),
+            "route_only_gain_mean": float(np.mean(gain_test * probe_used_test.astype(np.float64))),
+        },
+        "artifacts": {
+            "calib_decisions_parquet": str(cal_dec),
+            "test_decisions_parquet": str(test_dec),
+        },
+    }
+    metrics_path = out / "policy_metrics.json"
+    metrics_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return {"policy_dir": out, "metrics": meta, "metrics_path": metrics_path}
+
+
+def _run_probe_boundary_gate_seed(
+    *,
+    seed: int,
+    calib_val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    use_fast_p5_val: np.ndarray,
+    use_fast_p5_test: np.ndarray,
+    use_fast_probe_val: np.ndarray,
+    use_fast_probe_test: np.ndarray,
+    tau_by_diff: dict[str, float],
+    t_ref: float,
+    beta: float,
+    delta_quantiles: int,
+    out_dir: Path,
+    input_hashes: dict[str, str],
+    calib_split_cfg: dict[str, object],
+) -> dict:
+    if "risk_score_p5" not in calib_val_df.columns or "risk_score_p5" not in test_df.columns:
+        raise RuntimeError("Boundary gate requires risk_score_p5 in merged probe dataframe.")
+
+    def _dist(df: pd.DataFrame) -> np.ndarray:
+        diff = df["difficulty"].astype(str).to_numpy()
+        tau = np.array([float(tau_by_diff.get(str(d), float("inf"))) for d in diff], dtype=np.float64)
+        s = df["risk_score_p5"].to_numpy(dtype=np.float64)
+        return np.abs(s - tau).astype(np.float64)
+
+    dist_val = _dist(calib_val_df)
+    dist_test = _dist(test_df)
+
+    j_p5_val = _route_only_J(calib_val_df, use_fast_p5_val, t_ref=t_ref, beta=beta)
+    j_probe_val = _route_only_J(calib_val_df, use_fast_probe_val, t_ref=t_ref, beta=beta)
+    gain_val = (j_p5_val - j_probe_val).astype(np.float64)
+    cost_val = _probe_cost_norm(calib_val_df, t_ref=t_ref)
+
+    # Only P5-fast cases are eligible for the monotone probe upgrade.
+    eligible_val = np.asarray(use_fast_p5_val, dtype=bool)
+    cand = np.unique(
+        np.quantile(
+            dist_val[eligible_val] if np.any(eligible_val) else dist_val,
+            np.linspace(0.0, 1.0, int(max(delta_quantiles, 3))),
+            method="higher",
+        )
+    )
+    best = None
+    for delta in cand.tolist() + [float("inf")]:
+        probe_used = eligible_val & (dist_val <= float(delta))
+        net_gain = float(np.mean((gain_val - cost_val) * probe_used.astype(np.float64)))
+        probe_rate = float(np.mean(probe_used.astype(np.float64)))
+        key = (net_gain, -probe_rate, -float(delta))
+        if best is None or key > best["key"]:
+            best = {"key": key, "delta": float(delta), "net_gain": net_gain, "probe_rate": probe_rate}
+    assert best is not None
+    delta_sel = float(best["delta"])
+
+    def _apply(df: pd.DataFrame, use_fast_p5: np.ndarray, use_fast_probe: np.ndarray, dist: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        eligible = np.asarray(use_fast_p5, dtype=bool)
+        probe_used = eligible & (dist <= delta_sel)
+        use_fast = np.where(probe_used, np.asarray(use_fast_probe, dtype=bool), np.asarray(use_fast_p5, dtype=bool))
+        j_p5 = _route_only_J(df, use_fast_p5, t_ref=t_ref, beta=beta)
+        j_route = _route_only_J(df, use_fast, t_ref=t_ref, beta=beta)
+        cost = _probe_cost_norm(df, t_ref=t_ref) * probe_used.astype(np.float64)
+        delta = (j_p5 - (j_route + cost)).astype(np.float64)
+        return use_fast.astype(bool), probe_used.astype(bool), cost, delta
+
+    use_test, probe_used_test, cost_test, delta_test = _apply(test_df, use_fast_p5_test, use_fast_probe_test, dist_test)
+
+    out = out_dir
+    test_dec = _save_policy_decisions(
+        out,
+        split_name="test",
+        df=test_df,
+        use_fast=use_test,
+        probe_used=probe_used_test,
+        extra_cols={
+            "boundary_dist": dist_test,
+            "probe_cost_norm": cost_test,
+        },
+    )
+    meta = {
+        "version": "probe_boundary_v1",
+        "seed": int(seed),
+        "inputs": dict(input_hashes),
+        "calib_split": dict(calib_split_cfg),
+        "objective": {"T_ref": float(t_ref), "beta": float(beta)},
+        "boundary_gate": {
+            "delta": float(delta_sel),
+            "val_net_gain_mean": float(best["net_gain"]),
+            "val_probe_rate": float(best["probe_rate"]),
+        },
+        "test_metrics": {
+            "probe_trigger_rate": float(np.mean(probe_used_test.astype(np.float64))),
+            "delta_j_mean_vs_p5": float(np.mean(delta_test)),
+            "delta_j_median_vs_p5": float(np.median(delta_test)),
+        },
+        "artifacts": {"test_decisions_parquet": str(test_dec)},
+    }
+    metrics_path = out / "policy_metrics.json"
+    metrics_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return {"policy_dir": out, "metrics": meta, "metrics_path": metrics_path}
+
+
+def _risktrade_design_matrix(df: pd.DataFrame, *, ref_cols: pd.Index | None = None, include_cost_feature: bool = False) -> pd.DataFrame:
+    feat_cols = [
+        "probe_success",
+        "probe_expansions",
+        "probe_runtime_ms",
+        "probe_expansion_ratio",
+        "probe_h_drop_ratio",
+        "probe_progress_per_exp",
+        "probe_open_growth",
+        "probe_branching",
+        "probe_improve_rate",
+        "probe_bottleneck_rate",
+        "probe_deadend_rate",
+        "line_block_ratio",
+        "local_occ_ratio",
+        "global_occ_ratio",
+        "distance_ratio",
+        "complexity_score",
+        "los_clear",
+        "L_fast",
+        "T_fast_ms",
+        "search_fast_ms",
+        "path_len_fast",
+        "difficulty",
+    ]
+    if bool(include_cost_feature):
+        if "c_hat" not in df.columns:
+            raise RuntimeError("Missing c_hat for risktrade include_cost_feature.")
+        feat_cols.insert(feat_cols.index("difficulty"), "c_hat")
+    missing = [c for c in feat_cols if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"Missing risktrade features: {missing}")
+    x = pd.get_dummies(df[feat_cols], columns=["difficulty"], drop_first=False)
+    if ref_cols is not None:
+        x = x.reindex(columns=ref_cols, fill_value=0)
+    return x
+
+
+def _run_probe_risktrade_seed(
+    *,
+    seed: int,
+    calib_train_df: pd.DataFrame,
+    calib_val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    use_fast_p5_val: np.ndarray,
+    use_fast_p5_test: np.ndarray,
+    t_ref: float,
+    beta: float,
+    eps_rel: float,
+    risk_alpha: float,
+    threshold_quantiles: int,
+    include_cost_feature: bool,
+    out_dir: Path,
+    input_hashes: dict[str, str],
+    calib_split_cfg: dict[str, object],
+) -> dict:
+    # Targets on calib_train: benefit of choosing fast vs slow, and violation indicator under fast.
+    q_rel_train = calib_train_df["q_rel"].to_numpy(dtype=np.float64)
+    q_pos_train = np.maximum(q_rel_train, 0.0)
+    j_fast_train = calib_train_df["T_fast_ms"].to_numpy(dtype=np.float64) / max(float(t_ref), 1e-9) + float(beta) * q_pos_train
+    j_slow_train = calib_train_df["T_slow_ms"].to_numpy(dtype=np.float64) / max(float(t_ref), 1e-9)
+    y_benefit_train = (j_slow_train - j_fast_train).astype(np.float64)
+    y_vio_train = (q_rel_train > float(eps_rel)).astype(np.float64)
+
+    x_train = _risktrade_design_matrix(calib_train_df, include_cost_feature=bool(include_cost_feature))
+    reg_benefit = GradientBoostingRegressor(
+        random_state=int(seed),
+        n_estimators=700,
+        learning_rate=0.04,
+        max_depth=3,
+        subsample=0.9,
+    )
+    clf_vio = GradientBoostingClassifier(
+        random_state=int(seed) + 10,
+        n_estimators=500,
+        learning_rate=0.04,
+        max_depth=3,
+        subsample=0.9,
+    )
+    reg_benefit.fit(x_train, y_benefit_train)
+    clf_vio.fit(x_train, y_vio_train)
+
+    def _predict_bounds(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, dict[str, float]]:
+        x = _risktrade_design_matrix(df, ref_cols=x_train.columns, include_cost_feature=bool(include_cost_feature))
+        pred_b = reg_benefit.predict(x).astype(np.float64)
+        p_hat = clf_vio.predict_proba(x)[:, 1].astype(np.float64)
+        # True labels for calibration of bounds (only used on calib_val).
+        q_rel = df["q_rel"].to_numpy(dtype=np.float64)
+        q_pos = np.maximum(q_rel, 0.0)
+        j_fast = df["T_fast_ms"].to_numpy(dtype=np.float64) / max(float(t_ref), 1e-9) + float(beta) * q_pos
+        j_slow = df["T_slow_ms"].to_numpy(dtype=np.float64) / max(float(t_ref), 1e-9)
+        b_true = (j_slow - j_fast).astype(np.float64)
+        y = (q_rel > float(eps_rel)).astype(np.float64)
+        q_b = _one_sided_residual_quantile_overestimate(np.maximum(pred_b - b_true, 0.0), alpha=float(risk_alpha))
+        b_lcb = (pred_b - float(q_b)).astype(np.float64)
+        q_by_diff = _split_conformal_offsets(df, y_cal=y, p_cal=p_hat, alpha=float(risk_alpha))
+        diff = df["difficulty"].to_numpy(dtype=str)
+        p_ucb = np.clip(p_hat + np.array([q_by_diff[str(d)] for d in diff], dtype=np.float64), 0.0, 1.0).astype(np.float64)
+        return b_lcb, p_ucb, b_true, float(q_b), {str(k): float(v) for k, v in q_by_diff.items()}
+
+    b_lcb_val, p_ucb_val, _b_true_val, q_benefit, q_diff = _predict_bounds(calib_val_df)
+    # Score: benefit per unit risk upper bound (larger => more attractive to run fast).
+    score_val = b_lcb_val / np.maximum(p_ucb_val, 1e-9)
+    cand = np.unique(
+        np.quantile(
+            score_val[np.isfinite(score_val)],
+            np.linspace(0.0, 1.0, int(max(threshold_quantiles, 3))),
+            method="higher",
+        )
+    )
+
+    # Select tau on calib_val only: maximize J improvement vs P5 while keeping mean(p_ucb * use_fast) <= alpha.
+    j_p5_val = _route_only_J(calib_val_df, use_fast_p5_val, t_ref=t_ref, beta=beta)
+    cost_val = _probe_cost_norm(calib_val_df, t_ref=t_ref)  # always-probe cost model
+    best = None
+    for tau in cand.tolist() + [float("inf")]:
+        use_fast = (b_lcb_val > 0.0) & (score_val >= float(tau))
+        risk_bound = float(np.mean(p_ucb_val * use_fast.astype(np.float64)))
+        if risk_bound > float(eps_rel) + 1.0:  # unreachable; keep simple guard
+            pass
+        if risk_bound > float(getattr(calib_split_cfg, "strict_violation_target", 0.05)) + 1e-12:
+            # Use protocol alpha as target (strict_violation_target).
+            pass
+        # Use strict_violation_target from args (stored in calib_split_cfg via caller) when available.
+        alpha_budget = float(calib_split_cfg.get("strict_violation_target", 0.05))
+        if risk_bound > alpha_budget + 1e-12:
+            continue
+        j_rt = _route_only_J(calib_val_df, use_fast, t_ref=t_ref, beta=beta) + cost_val
+        delta = float(np.mean((j_p5_val - j_rt).astype(np.float64)))
+        probe_rate = 1.0  # always-probe in v1
+        key = (delta, -risk_bound, -probe_rate, -float(tau))
+        if best is None or key > best["key"]:
+            best = {"key": key, "tau": float(tau), "delta": delta, "risk_bound": risk_bound, "alpha_budget": alpha_budget}
+    if best is None:
+        best = {"tau": float("inf"), "delta": float("nan"), "risk_bound": float("nan"), "alpha_budget": float(calib_split_cfg.get("strict_violation_target", 0.05))}
+    tau_sel = float(best["tau"])
+
+    # Apply to test.
+    x_test = _risktrade_design_matrix(test_df, ref_cols=x_train.columns, include_cost_feature=bool(include_cost_feature))
+    pred_b_test = reg_benefit.predict(x_test).astype(np.float64)
+    p_hat_test = clf_vio.predict_proba(x_test)[:, 1].astype(np.float64)
+    # Use calib_val bounds (q_benefit/q_diff) frozen.
+    b_lcb_test = (pred_b_test - float(q_benefit)).astype(np.float64)
+    diff_test = test_df["difficulty"].to_numpy(dtype=str)
+    p_ucb_test = np.clip(p_hat_test + np.array([q_diff.get(str(d), 0.0) for d in diff_test], dtype=np.float64), 0.0, 1.0).astype(np.float64)
+    score_test = b_lcb_test / np.maximum(p_ucb_test, 1e-9)
+    use_fast_test = (b_lcb_test > 0.0) & (score_test >= tau_sel)
+    probe_used_test = np.ones(len(test_df), dtype=bool)  # v1: always run probe to obtain psi(x)
+
+    cost_test = _probe_cost_norm(test_df, t_ref=t_ref)
+    j_test = _route_only_J(test_df, use_fast_test, t_ref=t_ref, beta=beta) + cost_test
+    j_p5_test = _route_only_J(test_df, use_fast_p5_test, t_ref=t_ref, beta=beta)
+    delta_test = (j_p5_test - j_test).astype(np.float64)
+
+    out = out_dir
+    test_dec = _save_policy_decisions(
+        out,
+        split_name="test",
+        df=test_df,
+        use_fast=use_fast_test,
+        probe_used=probe_used_test,
+        extra_cols={
+            "benefit_lcb": b_lcb_test,
+            "risk_ucb": p_ucb_test,
+            "score": score_test,
+            "probe_cost_norm": cost_test,
+        },
+    )
+    meta = {
+        "version": "probe_risktrade_v1",
+        "seed": int(seed),
+        "inputs": dict(input_hashes),
+        "calib_split": dict(calib_split_cfg),
+        "objective": {"T_ref": float(t_ref), "beta": float(beta), "eps_rel": float(eps_rel), "alpha": float(calib_split_cfg.get("strict_violation_target", 0.05))},
+        "bounds": {"alpha_miscoverage": float(risk_alpha), "q_benefit": float(q_benefit), "q_risk_by_diff": dict(q_diff)},
+        "selection": {"tau_score": float(tau_sel), "val_delta_j_mean_vs_p5": float(best.get("delta", float("nan"))), "val_risk_bound": float(best.get("risk_bound", float("nan")))},
+        "test_metrics": {
+            "probe_trigger_rate": float(np.mean(probe_used_test.astype(np.float64))),
+            "delta_j_mean_vs_p5": float(np.mean(delta_test)),
+            "delta_j_median_vs_p5": float(np.median(delta_test)),
+            "risk_ucb_mean_fast": float(np.mean(p_ucb_test[use_fast_test])) if bool(np.any(use_fast_test)) else 0.0,
+        },
+        "artifacts": {"test_decisions_parquet": str(test_dec)},
+    }
+    metrics_path = out / "policy_metrics.json"
+    metrics_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return {"policy_dir": out, "metrics": meta, "metrics_path": metrics_path}
+
+
+def _run_probe_prefixreuse_seed(
+    *,
+    seed: int,
+    calib_df: pd.DataFrame,
+    calib_val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    use_fast_p5_calib: np.ndarray,
+    use_fast_p5_val: np.ndarray,
+    use_fast_p5_test: np.ndarray,
+    use_fast_probe_calib: np.ndarray,
+    use_fast_probe_val: np.ndarray,
+    use_fast_probe_test: np.ndarray,
+    t_ref: float,
+    beta: float,
+    out_dir: Path,
+    input_hashes: dict[str, str],
+    calib_split_cfg: dict[str, object],
+) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _summarize(split_df: pd.DataFrame, use_fast_p5: np.ndarray, use_fast: np.ndarray) -> dict:
+        uf = np.asarray(use_fast, dtype=bool)
+        up5 = np.asarray(use_fast_p5, dtype=bool)
+        cost_norm = _probe_cost_norm(split_df, t_ref=t_ref)
+        j_p5 = _route_only_J(split_df, up5, t_ref=t_ref, beta=beta)
+        j_route = _route_only_J(split_df, uf, t_ref=t_ref, beta=beta)
+        overhead = cost_norm * uf.astype(np.float64)
+        j = j_route + overhead
+        delta = (j_p5 - j).astype(np.float64)
+
+        t_fast = split_df["T_fast_ms"].to_numpy(dtype=np.float64)
+        t_slow = split_df["T_slow_ms"].to_numpy(dtype=np.float64)
+        route_lat = np.where(uf, t_fast, t_slow).astype(np.float64)
+        probe_lat = split_df["probe_runtime_ms"].to_numpy(dtype=np.float64) * uf.astype(np.float64)
+        total_lat = route_lat + probe_lat
+
+        return {
+            "num_cases": int(len(split_df)),
+            "fast_ratio": float(np.mean(uf.astype(np.float64))),
+            "probe_trigger_rate": 1.0,
+            "probe_overhead_mode": "prefix_reuse",
+            "mean_delta_j_vs_p5": float(np.mean(delta)),
+            "median_delta_j_vs_p5": float(np.median(delta)),
+            "mean_J_route": float(np.mean(j_route)),
+            "mean_J": float(np.mean(j)),
+            "mean_probe_overhead_norm": float(np.mean(overhead)),
+            "route_latency_ms": float(np.mean(route_lat)),
+            "probe_latency_ms": float(np.mean(probe_lat)),
+            "total_latency_ms": float(np.mean(total_lat)),
+        }
+
+    probe_used_calib = np.ones(len(calib_df), dtype=bool)
+    probe_used_test = np.ones(len(test_df), dtype=bool)
+    cost_calib = _probe_cost_norm(calib_df, t_ref=t_ref)
+    cost_test = _probe_cost_norm(test_df, t_ref=t_ref)
+    overhead_calib = cost_calib * np.asarray(use_fast_probe_calib, dtype=np.float64)
+    overhead_test = cost_test * np.asarray(use_fast_probe_test, dtype=np.float64)
+
+    calib_dec = _save_policy_decisions(
+        out_dir,
+        split_name="calib",
+        df=calib_df,
+        use_fast=use_fast_probe_calib,
+        probe_used=probe_used_calib,
+        extra_cols={"probe_cost_norm": cost_calib, "probe_overhead_norm": overhead_calib},
+    )
+    test_dec = _save_policy_decisions(
+        out_dir,
+        split_name="test",
+        df=test_df,
+        use_fast=use_fast_probe_test,
+        probe_used=probe_used_test,
+        extra_cols={"probe_cost_norm": cost_test, "probe_overhead_norm": overhead_test},
+    )
+
+    meta = {
+        "version": "probe_prefixreuse_v1",
+        "seed": int(seed),
+        "inputs": dict(input_hashes),
+        "calib_split": dict(calib_split_cfg),
+        "probe_overhead_mode": "prefix_reuse",
+        "parent_policy": "probe_strict_v2",
+        "objective": {
+            "J_formula": "J = T/T_ref + beta*max(delta_l_rel,0)",
+            "T_ref": float(t_ref),
+            "beta": float(beta),
+        },
+        "delta_j_mean_vs_p5": {
+            "calib": float(_summarize(calib_df, use_fast_p5_calib, use_fast_probe_calib)["mean_delta_j_vs_p5"]),
+            "val": float(_summarize(calib_val_df, use_fast_p5_val, use_fast_probe_val)["mean_delta_j_vs_p5"]),
+            "test": float(_summarize(test_df, use_fast_p5_test, use_fast_probe_test)["mean_delta_j_vs_p5"]),
+            "selection": float(_summarize(calib_val_df, use_fast_p5_val, use_fast_probe_val)["mean_delta_j_vs_p5"]),
+        },
+        "calib_metrics": _summarize(calib_df, use_fast_p5_calib, use_fast_probe_calib),
+        "val_metrics": _summarize(calib_val_df, use_fast_p5_val, use_fast_probe_val),
+        "test_metrics": _summarize(test_df, use_fast_p5_test, use_fast_probe_test),
+        "artifacts": {
+            "calib_decisions_parquet": str(calib_dec),
+            "test_decisions_parquet": str(test_dec),
+        },
+    }
+    metrics_path = out_dir / "policy_metrics.json"
+    metrics_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return {"policy_dir": out_dir, "metrics": meta, "metrics_path": metrics_path}
+
+
+def _trace_switch_design_matrix(df: pd.DataFrame, *, ref_cols: pd.Index | None = None) -> pd.DataFrame:
+    feat_num = [
+        "probe_success",
+        "probe_expansions",
+        "probe_runtime_ms",
+        "probe_expansion_ratio",
+        "probe_h_drop_ratio",
+        "probe_progress_per_exp",
+        "probe_open_growth",
+        "probe_branching",
+        "probe_improve_rate",
+        "probe_bottleneck_rate",
+        "probe_deadend_rate",
+        "line_block_ratio",
+        "local_occ_ratio",
+        "global_occ_ratio",
+        "distance_ratio",
+        "complexity_score",
+        "los_clear",
+    ]
+    if "c_hat" in df.columns:
+        feat_num.append("c_hat")
+    feat_cat = ["difficulty"]
+    missing = [c for c in (feat_num + feat_cat) if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"Missing trace-switch features: {missing}")
+    x = pd.get_dummies(df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
+    if ref_cols is not None:
+        x = x.reindex(columns=ref_cols, fill_value=0)
+    return x
+
+
+def _run_trace_switch_seed(
+    *,
+    seed: int,
+    calib_train_df: pd.DataFrame,
+    calib_val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    t_ref: float,
+    beta: float,
+    alpha: float,
+    threshold_quantiles: int,
+    overhead_mode: str,
+    out_dir: Path,
+    input_hashes: dict[str, str],
+    calib_split_cfg: dict[str, object],
+) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    alpha = float(np.clip(float(alpha), 1e-6, 0.999999))
+
+    def _net_improve(df: pd.DataFrame) -> np.ndarray:
+        t_fast = df["T_fast_ms"].to_numpy(dtype=np.float64)
+        t_slow = df["T_slow_ms"].to_numpy(dtype=np.float64)
+        q_pos = np.maximum(df["q_rel"].to_numpy(dtype=np.float64), 0.0)
+        j_fast = (t_fast / max(float(t_ref), 1e-9)) + float(beta) * q_pos
+        j_slow = t_slow / max(float(t_ref), 1e-9)
+        trace_cost = _probe_cost_norm(df, t_ref=float(t_ref))
+        return (j_fast - (j_slow + trace_cost)).astype(np.float64)
+
+    # Eligible = cases where P5 runs fast (we can only switch fast->slow; never slow->fast).
+    elig_train = calib_train_df["use_fast_p5"].to_numpy(dtype=bool)
+    elig_val = calib_val_df["use_fast_p5"].to_numpy(dtype=bool)
+    elig_test = test_df["use_fast_p5"].to_numpy(dtype=bool)
+    if not bool(np.any(elig_train)):
+        raise RuntimeError("trace_switch_v1: no eligible (P5-fast) samples in calib_train.")
+
+    y_train = _net_improve(calib_train_df)[elig_train]
+    y_val = _net_improve(calib_val_df)[elig_val]
+    y_test = _net_improve(test_df)[elig_test]
+
+    x_train = _trace_switch_design_matrix(calib_train_df.loc[elig_train].reset_index(drop=True))
+    x_val = _trace_switch_design_matrix(calib_val_df.loc[elig_val].reset_index(drop=True), ref_cols=x_train.columns)
+    x_test = _trace_switch_design_matrix(test_df.loc[elig_test].reset_index(drop=True), ref_cols=x_train.columns)
+
+    reg = GradientBoostingRegressor(
+        random_state=int(seed),
+        n_estimators=400,
+        learning_rate=0.05,
+        max_depth=3,
+        subsample=0.9,
+    )
+    reg.fit(x_train, y_train)
+
+    pred_val = reg.predict(x_val).astype(np.float64)
+    pred_test = reg.predict(x_test).astype(np.float64)
+    resid_val = (pred_val - y_val).astype(np.float64)
+    diff_val = calib_val_df.loc[elig_val, "difficulty"].to_numpy(dtype=str)
+    diff_test = test_df.loc[elig_test, "difficulty"].to_numpy(dtype=str)
+
+    q_by_diff: dict[str, float] = {}
+    for d in ("easy", "medium", "hard"):
+        vals = resid_val[diff_val == d]
+        if vals.size <= 0:
+            q_by_diff[d] = 0.0
+            continue
+        q_by_diff[d] = _one_sided_residual_quantile_overestimate(np.maximum(vals, 0.0), alpha=float(alpha))
+
+    q_val_vec = np.array([q_by_diff.get(str(d), 0.0) for d in diff_val], dtype=np.float64)
+    lcb_val = (pred_val - q_val_vec).astype(np.float64)
+
+    # Calib-only threshold selection: maximize *overall* mean net improvement vs P5 (tie-break: fewer switches).
+    cand = np.unique(
+        np.quantile(
+            lcb_val,
+            np.linspace(0.0, 1.0, int(max(int(threshold_quantiles), 3))),
+            method="higher",
+        )
+    ).tolist()
+    cand.append(0.0)
+    cand = sorted(set(float(x) for x in cand if np.isfinite(float(x))))
+    best = None
+    for thr in cand + [float("inf")]:
+        sw = lcb_val > float(thr)
+        net_gain = float(np.mean(y_val * sw.astype(np.float64)))
+        gain_if_sw = float(np.mean(y_val[sw])) if bool(np.any(sw)) else 0.0
+        rate = float(np.mean(sw.astype(np.float64)))
+        # key: maximize total gain; tie-break prefer lower switch rate; then prefer *larger* thresholds (more conservative).
+        key = (net_gain, -rate, gain_if_sw, float(thr))
+        if best is None or key > best["key"]:
+            best = {"key": key, "thr": float(thr), "net_gain": net_gain, "gain_if_sw": gain_if_sw, "rate": rate}
+    assert best is not None
+    thr = float(best["thr"])
+
+    def _apply(df: pd.DataFrame, elig: np.ndarray, pred: np.ndarray, diff: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        q_vec = np.array([q_by_diff.get(str(d), 0.0) for d in diff], dtype=np.float64)
+        lcb = (pred - q_vec).astype(np.float64)
+        sw_sub = (lcb > float(thr)).astype(bool)
+        sw = np.zeros(len(df), dtype=bool)
+        sw[np.asarray(elig, dtype=bool)] = sw_sub
+        lcb_full = np.full(len(df), float("nan"), dtype=np.float64)
+        lcb_full[np.asarray(elig, dtype=bool)] = lcb
+        use_fast = df["use_fast_p5"].to_numpy(dtype=bool).copy()
+        use_fast[elig] = use_fast[elig] & (~sw_sub)
+        probe_used = df["use_fast_p5"].to_numpy(dtype=bool).copy()
+        return use_fast.astype(bool), probe_used.astype(bool), sw.astype(bool), lcb_full.astype(np.float64)
+
+    # Apply to full splits.
+    # NOTE: probe_used indicates "trace executed" (eligible branch). Overhead is charged only when the final route is slow.
+    use_fast_cal, probe_used_cal, sw_cal, _lcb_cal = _apply(
+        calib_train_df, elig_train, reg.predict(x_train).astype(np.float64), calib_train_df.loc[elig_train, "difficulty"].to_numpy(dtype=str)
+    )
+    use_fast_val, probe_used_val, sw_val, lcb_val2 = _apply(calib_val_df, elig_val, pred_val, diff_val)
+    use_fast_test, probe_used_test, sw_test, lcb_test = _apply(test_df, elig_test, pred_test, diff_test)
+
+    # Test delta-J vs P5 with strict trace accounting.
+    j_p5_test = _route_only_J(test_df, test_df["use_fast_p5"].to_numpy(dtype=bool), t_ref=float(t_ref), beta=float(beta))
+    j_route_test = _route_only_J(test_df, use_fast_test, t_ref=float(t_ref), beta=float(beta))
+    cost_test = _probe_cost_norm(test_df, t_ref=float(t_ref))
+    overhead_mode = str(overhead_mode).lower().strip()
+    if overhead_mode == "trace_slow_only":
+        overhead = cost_test * sw_test.astype(np.float64)
+    elif overhead_mode == "trace_slow_overlap_infer":
+        if "infer_slow_ms" not in test_df.columns:
+            raise RuntimeError("trace_switch_v1: overhead_mode=trace_slow_overlap_infer requires infer_slow_ms in test_df.")
+        infer_norm = np.clip(test_df["infer_slow_ms"].to_numpy(dtype=np.float64), 0.0, None) / max(float(t_ref), 1e-9)
+        overhead = np.maximum(cost_test - infer_norm, 0.0) * sw_test.astype(np.float64)
+    else:
+        raise ValueError(f"trace_switch_v1: invalid overhead_mode={overhead_mode!r}")
+    j_test = (j_route_test + overhead).astype(np.float64)
+    delta = (j_p5_test - j_test).astype(np.float64)
+
+    # Save decisions (calib+val concatenated for inspection; test includes debug columns).
+    cal_dec = _save_policy_decisions(
+        out_dir,
+        split_name="calib",
+        df=pd.concat([calib_train_df, calib_val_df], ignore_index=True),
+        use_fast=np.concatenate([use_fast_cal, use_fast_val]),
+        probe_used=np.concatenate([probe_used_cal, probe_used_val]),
+        extra_cols={
+            "switch_to_slow": np.concatenate([sw_cal, sw_val]).astype(bool),
+        },
+    )
+    net_true_full = np.full(len(test_df), float("nan"), dtype=np.float64)
+    net_true_full[elig_test] = y_test.astype(np.float64)
+    test_dec = _save_policy_decisions(
+        out_dir,
+        split_name="test",
+        df=test_df,
+        use_fast=use_fast_test,
+        probe_used=probe_used_test,
+        extra_cols={
+            "switch_to_slow": sw_test.astype(bool),
+            "net_improve_lcb": lcb_test.astype(np.float64),
+            "net_improve_true": net_true_full.astype(np.float64),
+            "trace_cost_norm": cost_test.astype(np.float64),
+            "trace_overhead_norm": overhead.astype(np.float64),
+        },
+    )
+
+    meta = {
+        "version": "trace_switch_v1",
+        "seed": int(seed),
+        "inputs": dict(input_hashes),
+        "calib_split": dict(calib_split_cfg),
+        "probe_overhead_mode": str(overhead_mode),
+        "objective": {"T_ref": float(t_ref), "beta": float(beta)},
+        "trace_switch": {
+            "alpha": float(alpha),
+            "q_by_difficulty": {k: float(v) for k, v in q_by_diff.items()},
+            "threshold": float(thr),
+            "val_mean_net_improve": float(best["net_gain"]),
+            "val_mean_net_improve_if_switched": float(best["gain_if_sw"]),
+            "val_switch_rate": float(best["rate"]),
+        },
+        "test_metrics": {
+            "trace_used_rate": float(np.mean(probe_used_test.astype(np.float64))),
+            "switch_rate": float(np.mean(sw_test.astype(np.float64))),
+            "delta_j_mean_vs_p5": float(np.mean(delta)),
+            "delta_j_median_vs_p5": float(np.median(delta)),
+            "mean_delta_j_route_only": float(np.mean((j_p5_test - j_route_test).astype(np.float64))),
+            "mean_trace_overhead_norm": float(np.mean(overhead)),
+        },
+        "artifacts": {
+            "calib_decisions_parquet": str(cal_dec),
+            "test_decisions_parquet": str(test_dec),
+        },
+    }
+    metrics_path = out_dir / "policy_metrics.json"
+    metrics_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return {"policy_dir": out_dir, "metrics": meta, "metrics_path": metrics_path}
 
 
 def _read_parquet(path: Path) -> pd.DataFrame:
@@ -311,9 +1306,10 @@ def _build_conformal_xy(
         "T_fast_ms",
         "search_fast_ms",
         "path_len_fast",
-        "ood_family",
     ]
-    feat_cat = ["difficulty", "source_dataset", "scenario", "map_id"]
+    # IMPORTANT(validity): do not include dataset identifiers (source_dataset/scenario/map_id) or split-derived flags.
+    # Keep only deployable group keys (difficulty) for stratified calibration.
+    feat_cat = ["difficulty"]
     x_train = pd.get_dummies(train_df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
     x_val = pd.get_dummies(val_df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
     x_test = pd.get_dummies(test_df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
@@ -322,6 +1318,58 @@ def _build_conformal_xy(
     y_train = (train_df["q_rel"].to_numpy(dtype=np.float64) > float(eps)).astype(np.float64)
     y_val = (val_df["q_rel"].to_numpy(dtype=np.float64) > float(eps)).astype(np.float64)
     return x_train, x_val, x_test, y_train, y_val
+
+
+def _cost_feature_columns() -> tuple[list[str], list[str]]:
+    feat_num = [
+        "line_block_ratio",
+        "local_occ_ratio",
+        "global_occ_ratio",
+        "distance_ratio",
+        "complexity_score",
+        "los_clear",
+    ]
+    feat_cat = ["difficulty"]
+    return feat_num, feat_cat
+
+
+def _cost_design_matrix(df: pd.DataFrame, *, ref_cols: pd.Index | None = None) -> pd.DataFrame:
+    feat_num, feat_cat = _cost_feature_columns()
+    missing = [c for c in (feat_num + feat_cat) if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"Missing cost features: {missing}")
+    x = pd.get_dummies(df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
+    if ref_cols is not None:
+        x = x.reindex(columns=ref_cols, fill_value=0)
+    return x
+
+
+def _predict_cost_c_hat(
+    *,
+    seed: int,
+    train_df: pd.DataFrame,
+    eval_dfs: dict[str, pd.DataFrame],
+    args: argparse.Namespace,
+) -> tuple[GradientBoostingRegressor, dict[str, np.ndarray]]:
+    if "c" not in train_df.columns:
+        raise RuntimeError("Missing oracle cost column `c` in calibration dataframe.")
+    x_train = _cost_design_matrix(train_df)
+    y_train = np.clip(train_df["c"].to_numpy(dtype=np.float64), 0.0, None)
+    reg = GradientBoostingRegressor(
+        random_state=int(seed),
+        n_estimators=int(args.gbr_n_estimators),
+        learning_rate=float(args.gbr_learning_rate),
+        max_depth=int(args.gbr_max_depth),
+        subsample=float(args.gbr_subsample),
+    )
+    reg.fit(x_train, y_train)
+
+    preds: dict[str, np.ndarray] = {}
+    preds["train"] = np.clip(reg.predict(x_train).astype(np.float64), 1e-6, None)
+    for name, df in eval_dfs.items():
+        x = _cost_design_matrix(df, ref_cols=x_train.columns)
+        preds[str(name)] = np.clip(reg.predict(x).astype(np.float64), 1e-6, None)
+    return reg, preds
 
 
 def _split_conformal_offsets(
@@ -459,9 +1507,8 @@ def _run_conformal_seed(
         "T_fast_ms",
         "search_fast_ms",
         "path_len_fast",
-        "ood_family",
     ]
-    feat_cat = ["difficulty", "source_dataset", "scenario", "map_id"]
+    feat_cat = ["difficulty"]
     x_all = pd.get_dummies(calib_df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
     x_all = x_all.reindex(columns=x_train.columns, fill_value=0)
     p_all = clf.predict_proba(x_all)[:, 1].astype(np.float64)
@@ -472,14 +1519,27 @@ def _run_conformal_seed(
     tune_v_target = float(max(float(args.strict_violation_target) - float(args.strict_tune_violation_margin), 0.0))
     tune_ci_target = float(max(float(args.strict_ci_upper_target) - float(args.strict_tune_ci_margin), 0.0))
 
-    c_ref = float(np.median(calib_train_df["c"].to_numpy(dtype=np.float64)))
+    # IMPORTANT(validity): never use oracle per-sample c = T_slow - T_fast in routing decisions.
+    # Instead, fit a cost predictor c_hat(x) on calib_train using deployable static features only.
+    cost_reg, c_hat = _predict_cost_c_hat(
+        seed=int(seed),
+        train_df=calib_train_df,
+        eval_dfs={"all": calib_df, "val": calib_val_df, "test": test_df},
+        args=args,
+    )
+    c_hat_train = np.asarray(c_hat["train"], dtype=np.float64)
+    c_hat_all = np.asarray(c_hat["all"], dtype=np.float64)
+    c_hat_val = np.asarray(c_hat["val"], dtype=np.float64)
+    c_hat_test = np.asarray(c_hat["test"], dtype=np.float64)
+
+    c_ref = float(np.median(c_hat_train))
     if not np.isfinite(c_ref) or c_ref <= 1e-9:
-        c_ref = float(np.median(calib_df["c"].to_numpy(dtype=np.float64)))
+        c_ref = float(np.median(c_hat_all))
     c_ref = float(max(c_ref, 1e-6))
 
-    c_all = np.clip(calib_df["c"].to_numpy(dtype=np.float64) / max(c_ref, 1e-9), 1e-6, None)
-    c_val = np.clip(calib_val_df["c"].to_numpy(dtype=np.float64) / max(c_ref, 1e-9), 1e-6, None)
-    c_test = np.clip(test_df["c"].to_numpy(dtype=np.float64) / max(c_ref, 1e-9), 1e-6, None)
+    c_norm_all = np.clip(c_hat_all / c_ref, 1e-6, None)
+    c_norm_val = np.clip(c_hat_val / c_ref, 1e-6, None)
+    c_norm_test = np.clip(c_hat_test / c_ref, 1e-6, None)
     q_val = calib_val_df["q_rel"].to_numpy(dtype=np.float64)
     diff_val = calib_val_df["difficulty"].to_numpy()
     diff_all = calib_df["difficulty"].to_numpy()
@@ -509,11 +1569,11 @@ def _run_conformal_seed(
 
         for a in a_grid:
             for b in b_grid:
-                score_val = (np.clip(p_val_u, 1e-9, 1.0) ** float(a)) / (np.clip(c_val, 1e-6, None) ** float(b))
+                score_val = (np.clip(p_val_u, 1e-9, 1.0) ** float(a)) / (np.clip(c_norm_val, 1e-6, None) ** float(b))
                 score_test = None
                 if select_on == "test":
                     assert p_test_u is not None
-                    score_test = (np.clip(p_test_u, 1e-9, 1.0) ** float(a)) / (np.clip(c_test, 1e-6, None) ** float(b))
+                    score_test = (np.clip(p_test_u, 1e-9, 1.0) ** float(a)) / (np.clip(c_norm_test, 1e-6, None) ** float(b))
 
                 prep: dict[str, dict] = {}
                 pre_v: dict[str, np.ndarray] = {}
@@ -523,7 +1583,7 @@ def _run_conformal_seed(
                     ord_desc = ids[np.argsort(score_val[ids])[::-1]]
                     prep[d] = {"ids": ids, "ord_desc": ord_desc, "n": len(ord_desc)}
                     pre_v[d] = np.concatenate([[0], np.cumsum((q_val[ord_desc] > float(args.epsilon_rel)).astype(np.int32))])
-                    pre_c[d] = np.concatenate([[0.0], np.cumsum(calib_val_df["c"].to_numpy(dtype=np.float64)[ord_desc] / max(n_val, 1))])
+                    pre_c[d] = np.concatenate([[0.0], np.cumsum(c_hat_val[ord_desc] / max(n_val, 1))])
 
                 # Greedy init that prioritizes high violation-reduction per latency under strict tune targets.
                 k_init = {"easy": 0, "medium": 0, "hard": 0}
@@ -543,7 +1603,7 @@ def _run_conformal_seed(
                         vio_reduction = 1.0 if q_val[idx] > float(args.epsilon_rel) else 0.0
                         # Small score prior stabilizes tie-breaking on non-violating samples.
                         score_prior = float(np.clip(score_val[idx], 0.0, 1.0))
-                        lat_cost = float(calib_val_df["c"].to_numpy(dtype=np.float64)[idx] / max(n_val, 1))
+                        lat_cost = float(c_hat_val[idx] / max(n_val, 1))
                         ratio = (vio_reduction + 0.25 * score_prior) / max(lat_cost, 1e-9)
                         if ratio > best_ratio:
                             best_ratio = ratio
@@ -700,13 +1760,23 @@ def _run_conformal_seed(
             f"No feasible strict conformal policy for seed={seed}. Check: {search_csv}"
         )
 
-    def _save_decisions(path: Path, df: pd.DataFrame, use_fast: np.ndarray, p_upper: np.ndarray, score: np.ndarray) -> None:
+    def _save_decisions(
+        path: Path,
+        df: pd.DataFrame,
+        use_fast: np.ndarray,
+        p_upper: np.ndarray,
+        score: np.ndarray,
+        c_hat_ms: np.ndarray,
+        c_hat_norm: np.ndarray,
+    ) -> None:
         out = df.copy()
         out["p_upper"] = p_upper.astype(np.float64)
         out["risk_score"] = score.astype(np.float64)
         out["use_fast"] = use_fast.astype(bool)
         out["route"] = np.where(use_fast, "fast", "slow")
         out["U_conformal"] = score.astype(np.float64)
+        out["c_hat_ms"] = np.asarray(c_hat_ms, dtype=np.float64)
+        out["c_hat_norm"] = np.asarray(c_hat_norm, dtype=np.float64)
         out.to_parquet(path, index=False)
 
     # Final evaluation on calib/test is performed once for the selected hyperparameters.
@@ -715,23 +1785,24 @@ def _run_conformal_seed(
     p_test_u = np.clip(p_test + np.array([q_by_diff[d] for d in diff_test], dtype=np.float64), 0.0, 1.0)
     a_sel = float(selected["a"])
     b_sel = float(selected["b"])
-    score_all = (np.clip(p_all_u, 1e-9, 1.0) ** a_sel) / (np.clip(c_all, 1e-6, None) ** b_sel)
-    score_test = (np.clip(p_test_u, 1e-9, 1.0) ** a_sel) / (np.clip(c_test, 1e-6, None) ** b_sel)
+    score_all = (np.clip(p_all_u, 1e-9, 1.0) ** a_sel) / (np.clip(c_norm_all, 1e-6, None) ** b_sel)
+    p_val_u = np.clip(p_val + np.array([q_by_diff[d] for d in diff_val], dtype=np.float64), 0.0, 1.0)
+    score_val = (np.clip(p_val_u, 1e-9, 1.0) ** a_sel) / (np.clip(c_norm_val, 1e-6, None) ** b_sel)
+    score_test = (np.clip(p_test_u, 1e-9, 1.0) ** a_sel) / (np.clip(c_norm_test, 1e-6, None) ** b_sel)
     use_all = _apply_tau_by_diff(diff_all, score_all, selected["tau_by_diff"])
+    use_val = _apply_tau_by_diff(diff_val, score_val, selected["tau_by_diff"])
     use_test = _apply_tau_by_diff(diff_test, score_test, selected["tau_by_diff"])
     m_all = _conformal_policy_metrics(calib_df, use_all, eps_rel=float(args.epsilon_rel))
     m_test = _conformal_policy_metrics(test_df, use_test, eps_rel=float(args.epsilon_rel))
 
     calib_dec = out_dir / "calib_decisions.parquet"
     test_dec = out_dir / "test_decisions.parquet"
-    _save_decisions(calib_dec, calib_df, use_all, p_all_u, score_all)
-    _save_decisions(test_dec, test_df, use_test, p_test_u, score_test)
+    _save_decisions(calib_dec, calib_df, use_all, p_all_u, score_all, c_hat_all, c_norm_all)
+    _save_decisions(test_dec, test_df, use_test, p_test_u, score_test, c_hat_test, c_norm_test)
 
     gate = {
-        "violation_rate_le_8pct": bool(m_test["violation_rate"] <= float(args.strict_violation_target) + 1e-12),
-        "violation_ci95_upper_le_9pct": bool(
-            m_test["violation_rate_ci95"][1] <= float(args.strict_ci_upper_target) + 1e-12
-        ),
+        "violation_rate_le_target": bool(m_test["violation_rate"] <= float(args.strict_violation_target) + 1e-12),
+        "violation_ci95_upper_le_target": bool(m_test["violation_rate_ci95"][1] <= float(args.strict_ci_upper_target) + 1e-12),
         "backoff_count_zero": True,
     }
     metrics = {
@@ -739,6 +1810,21 @@ def _run_conformal_seed(
         "seed": int(seed),
         "inputs": dict(input_hashes),
         "calib_split": dict(calib_split_cfg),
+        "cost_proxy": {
+            "name": "c_hat_gbr_static_v1",
+            "target_def": "c = T_slow_ms - T_fast_ms",
+            "fit_split": "calib_train",
+            "features_num": _cost_feature_columns()[0],
+            "features_cat": _cost_feature_columns()[1],
+            "ref_median_ms": float(c_ref),
+            "model": {
+                "type": "GradientBoostingRegressor",
+                "n_estimators": int(args.gbr_n_estimators),
+                "learning_rate": float(args.gbr_learning_rate),
+                "max_depth": int(args.gbr_max_depth),
+                "subsample": float(args.gbr_subsample),
+            },
+        },
         "strict_targets": {
             "violation_rate": float(args.strict_violation_target),
             "ci95_upper": float(args.strict_ci_upper_target),
@@ -757,6 +1843,7 @@ def _run_conformal_seed(
             "rule": "difficulty-wise thresholded U_conformal; fast iff U<=tau_d",
             "backoff_count": 0,
             "selection_split": str(select_on),
+            "oracle_assist_used": False,
         },
         "calib_metrics": m_all,
         "val_metrics": selected.get("val_metrics", {}),
@@ -775,7 +1862,363 @@ def _run_conformal_seed(
         "metrics": metrics,
         "calib_decisions": calib_dec,
         "test_decisions": test_dec,
+        "use_fast_calib": use_all.astype(bool),
+        "use_fast_val": use_val.astype(bool),
+        "use_fast_test": use_test.astype(bool),
     }
+
+
+def _split_conformal_offsets_by_partition(
+    *,
+    part_ids: np.ndarray,
+    y_cal: np.ndarray,
+    p_cal: np.ndarray,
+    alpha: float,
+) -> dict[int, float]:
+    part_ids = np.asarray(part_ids, dtype=np.int64)
+    y_cal = np.asarray(y_cal, dtype=np.float64)
+    p_cal = np.asarray(p_cal, dtype=np.float64)
+    if part_ids.shape[0] != y_cal.shape[0] or part_ids.shape[0] != p_cal.shape[0]:
+        raise ValueError("partition offset: shape mismatch.")
+    out: dict[int, float] = {}
+    for pid in np.unique(part_ids).tolist():
+        mask = part_ids == int(pid)
+        s = np.maximum(y_cal[mask] - p_cal[mask], 0.0)
+        n = int(s.size)
+        if n <= 0:
+            out[int(pid)] = 0.0
+            continue
+        level = float(np.ceil((n + 1) * (1.0 - float(alpha))) / n)
+        level = float(np.clip(level, 0.0, 1.0))
+        out[int(pid)] = float(np.quantile(s, level, method="higher"))
+    return out
+
+
+def _run_partition_crc_seed(
+    *,
+    seed: int,
+    calib_df: pd.DataFrame,
+    calib_train_df: pd.DataFrame,
+    calib_val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    args: argparse.Namespace,
+    out_dir: Path,
+    input_hashes: dict[str, str],
+    calib_split_cfg: dict[str, object],
+) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Objective parameters must be derived from calib_train only (strict; no test peeking).
+    t_ref = float(np.median(calib_train_df["T_slow_ms"].to_numpy(dtype=np.float64)))
+    q_pos = np.maximum(calib_train_df["q_rel"].to_numpy(dtype=np.float64), 0.0)
+    nz = q_pos[q_pos > 1e-9]
+    q_med = float(np.median(nz)) if nz.size > 0 else 1.0
+    beta = float(
+        np.clip(
+            np.median(calib_train_df["T_slow_ms"].to_numpy(dtype=np.float64) / max(t_ref, 1e-9)) / max(q_med, 1e-9),
+            1e-3,
+            200.0,
+        )
+    )
+
+    # Reuse the same base feature set as conformal_strict_v2, but tighten conformal offsets via learned partitions.
+    x_train, x_val, x_test, y_train, y_val = _build_conformal_xy(
+        calib_train_df, calib_val_df, test_df, eps=float(args.epsilon_rel)
+    )
+    clf = GradientBoostingClassifier(
+        random_state=int(seed),
+        n_estimators=int(args.gbc_n_estimators),
+        learning_rate=float(args.gbc_learning_rate),
+        max_depth=int(args.gbc_max_depth),
+        subsample=float(args.gbc_subsample),
+    )
+    clf.fit(x_train, y_train)
+    p_val = clf.predict_proba(x_val)[:, 1].astype(np.float64)
+    p_test = clf.predict_proba(x_test)[:, 1].astype(np.float64)
+
+    feat_num = [
+        "line_block_ratio",
+        "local_occ_ratio",
+        "global_occ_ratio",
+        "distance_ratio",
+        "complexity_score",
+        "los_clear",
+        "L_fast",
+        "T_fast_ms",
+        "search_fast_ms",
+        "path_len_fast",
+    ]
+    feat_cat = ["difficulty"]
+    x_all = pd.get_dummies(calib_df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
+    x_all = x_all.reindex(columns=x_train.columns, fill_value=0)
+    p_all = clf.predict_proba(x_all)[:, 1].astype(np.float64)
+
+    # Cost proxy c_hat(x) (deployable; fitted on calib_train only).
+    _cost_reg, c_hat = _predict_cost_c_hat(
+        seed=int(seed),
+        train_df=calib_train_df,
+        eval_dfs={"all": calib_df, "val": calib_val_df, "test": test_df},
+        args=args,
+    )
+    c_hat_train = np.asarray(c_hat["train"], dtype=np.float64)
+    c_hat_all = np.asarray(c_hat["all"], dtype=np.float64)
+    c_hat_val = np.asarray(c_hat["val"], dtype=np.float64)
+    c_hat_test = np.asarray(c_hat["test"], dtype=np.float64)
+
+    c_ref = float(np.median(c_hat_train))
+    if not np.isfinite(c_ref) or c_ref <= 1e-9:
+        c_ref = float(np.median(c_hat_all))
+    c_ref = float(max(c_ref, 1e-6))
+    c_norm_all = np.clip(c_hat_all / c_ref, 1e-6, None)
+    c_norm_val = np.clip(c_hat_val / c_ref, 1e-6, None)
+    c_norm_test = np.clip(c_hat_test / c_ref, 1e-6, None)
+
+    # Learn a small partitioner on calib_train only (deployable features).
+    max_leaves = int(max(getattr(args, "partition_crc_max_leaves", 2), 2))
+    min_leaf = int(max(getattr(args, "partition_crc_min_leaf", 1), 1))
+    part = DecisionTreeClassifier(
+        random_state=int(seed) + 991,
+        max_leaf_nodes=max_leaves,
+        min_samples_leaf=min_leaf,
+    )
+    part.fit(x_train, y_train)
+    leaf_val = part.apply(x_val).astype(np.int64)
+    leaf_test = part.apply(x_test).astype(np.int64)
+    leaf_all = part.apply(x_all).astype(np.int64)
+
+    alpha_grid = _parse_grid(args.strict_conformal_alpha_grid)
+    a_grid = _parse_grid(args.strict_score_a_grid)
+    b_grid = _parse_grid(args.strict_score_b_grid)
+    tune_v_target = float(max(float(args.strict_violation_target) - float(args.strict_tune_violation_margin), 0.0))
+    tune_ci_target = float(max(float(args.strict_ci_upper_target) - float(args.strict_tune_ci_margin), 0.0))
+
+    q_val = calib_val_df["q_rel"].to_numpy(dtype=np.float64)
+    diff_val = calib_val_df["difficulty"].to_numpy()
+    diff_all = calib_df["difficulty"].to_numpy()
+    diff_test = test_df["difficulty"].to_numpy()
+
+    n_val = int(len(calib_val_df))
+    base_v = int(np.sum(q_val > float(args.epsilon_rel)))
+    base_lat = float(np.mean(calib_val_df["T_fast_ms"].to_numpy(dtype=np.float64)))
+
+    rows: list[dict] = []
+    selected = None
+
+    for alpha in alpha_grid:
+        q_by_leaf = _split_conformal_offsets_by_partition(part_ids=leaf_val, y_cal=y_val, p_cal=p_val, alpha=float(alpha))
+        q_val_vec = np.array([float(q_by_leaf.get(int(pid), 0.0)) for pid in leaf_val], dtype=np.float64)
+        p_val_u = np.clip(p_val + q_val_vec, 0.0, 1.0)
+
+        q_test_vec = np.array([float(q_by_leaf.get(int(pid), 0.0)) for pid in leaf_test], dtype=np.float64)
+        p_test_u = np.clip(p_test + q_test_vec, 0.0, 1.0)
+
+        for a in a_grid:
+            for b in b_grid:
+                score_val = (np.clip(p_val_u, 1e-9, 1.0) ** float(a)) / (np.clip(c_norm_val, 1e-6, None) ** float(b))
+
+                prep: dict[str, dict] = {}
+                pre_v: dict[str, np.ndarray] = {}
+                pre_c: dict[str, np.ndarray] = {}
+                for d in ("easy", "medium", "hard"):
+                    ids = np.where(diff_val == d)[0]
+                    ord_desc = ids[np.argsort(score_val[ids])[::-1]]
+                    prep[d] = {"ids": ids, "ord_desc": ord_desc, "n": len(ord_desc)}
+                    pre_v[d] = np.concatenate([[0], np.cumsum((q_val[ord_desc] > float(args.epsilon_rel)).astype(np.int32))])
+                    pre_c[d] = np.concatenate([[0.0], np.cumsum(c_hat_val[ord_desc] / max(n_val, 1))])
+
+                # Greedy init that prioritizes violation-reduction per latency under strict tune targets.
+                k_init = {"easy": 0, "medium": 0, "hard": 0}
+                ptr = {"easy": 0, "medium": 0, "hard": 0}
+                cur_v = base_v
+                cur_ci = _wilson_ci(cur_v, n_val)[1]
+                while (cur_v / max(n_val, 1) > tune_v_target or cur_ci > tune_ci_target) and any(
+                    ptr[d] < prep[d]["n"] for d in ("easy", "medium", "hard")
+                ):
+                    best_d = None
+                    best_ratio = -1.0
+                    for d in ("easy", "medium", "hard"):
+                        p = int(ptr[d])
+                        if p >= int(prep[d]["n"]):
+                            continue
+                        idx = int(prep[d]["ord_desc"][p])
+                        vio_reduction = 1.0 if q_val[idx] > float(args.epsilon_rel) else 0.0
+                        score_prior = float(np.clip(score_val[idx], 0.0, 1.0))
+                        lat_cost = float(c_hat_val[idx] / max(n_val, 1))
+                        ratio = (vio_reduction + 0.25 * score_prior) / max(lat_cost, 1e-9)
+                        if ratio > best_ratio:
+                            best_ratio = ratio
+                            best_d = d
+                    if best_d is None:
+                        break
+                    ptr[best_d] += 1
+                    k_init[best_d] += 1
+                    cur_v = int(base_v - (pre_v["easy"][k_init["easy"]] + pre_v["medium"][k_init["medium"]] + pre_v["hard"][k_init["hard"]]))
+                    cur_ci = _wilson_ci(cur_v, n_val)[1]
+
+                if cur_v / max(n_val, 1) > tune_v_target or cur_ci > tune_ci_target:
+                    rows.append({"alpha": float(alpha), "a": float(a), "b": float(b), "feasible_on_tune": False})
+                    continue
+
+                w = int(max(args.strict_search_window, 0))
+                step = int(max(args.strict_search_step, 1))
+                ranges = {
+                    d: range(
+                        max(0, int(k_init[d]) - w),
+                        min(int(prep[d]["n"]), int(k_init[d]) + w) + 1,
+                        step,
+                    )
+                    for d in ("easy", "medium", "hard")
+                }
+
+                best_local = None
+                for ke in ranges["easy"]:
+                    for km in ranges["medium"]:
+                        for kh in ranges["hard"]:
+                            vio, ci_up, lat = _conformal_metric_from_k(
+                                pre_v_easy=pre_v["easy"],
+                                pre_v_med=pre_v["medium"],
+                                pre_v_hard=pre_v["hard"],
+                                pre_c_easy=pre_c["easy"],
+                                pre_c_med=pre_c["medium"],
+                                pre_c_hard=pre_c["hard"],
+                                base_v=base_v,
+                                base_lat=base_lat,
+                                n_total=n_val,
+                                k_easy=int(ke),
+                                k_med=int(km),
+                                k_hard=int(kh),
+                            )
+                            if vio > tune_v_target + 1e-12 or ci_up > tune_ci_target + 1e-12:
+                                continue
+                            cand = (lat, ci_up, vio, int(ke), int(km), int(kh))
+                            if best_local is None or cand < best_local:
+                                best_local = cand
+
+                if best_local is None:
+                    rows.append({"alpha": float(alpha), "a": float(a), "b": float(b), "feasible_on_tune": False})
+                    continue
+
+                k_by_diff = {"easy": int(best_local[3]), "medium": int(best_local[4]), "hard": int(best_local[5])}
+                use_val, tau_by_diff = _apply_k_by_diff(calib_val_df, score_val, k_by_diff)
+                m_val = _conformal_policy_metrics(calib_val_df, use_val, eps_rel=float(args.epsilon_rel))
+                j_val_mean = float(np.mean(_route_only_J(calib_val_df, use_val, t_ref=float(t_ref), beta=float(beta))))
+                gate_val = bool(
+                    float(m_val["violation_rate"]) <= float(args.strict_violation_target) + 1e-12
+                    and float(m_val["violation_rate_ci95"][1]) <= float(args.strict_ci_upper_target) + 1e-12
+                )
+
+                rows.append(
+                    {
+                        "alpha": float(alpha),
+                        "a": float(a),
+                        "b": float(b),
+                        "tune_latency_ms": float(best_local[0]),
+                        "tune_violation_rate": float(best_local[2]),
+                        "tune_violation_ci_up": float(best_local[1]),
+                        "k_slow_easy": int(k_by_diff["easy"]),
+                        "k_slow_medium": int(k_by_diff["medium"]),
+                        "k_slow_hard": int(k_by_diff["hard"]),
+                        "val_latency_ms": float(m_val["avg_latency_ms"]),
+                        "val_violation_rate": float(m_val["violation_rate"]),
+                        "val_violation_ci_up": float(m_val["violation_rate_ci95"][1]),
+                        "val_fast_ratio": float(m_val["fast_ratio"]),
+                        "val_J_mean": float(j_val_mean),
+                        "feasible_on_val": bool(gate_val),
+                        "feasible_on_tune": True,
+                    }
+                )
+
+                if not gate_val:
+                    continue
+                cand = (float(j_val_mean), float(m_val["violation_rate_ci95"][1]), float(m_val["violation_rate"]))
+                if selected is None or cand < selected["key"]:
+                    selected = {
+                        "key": cand,
+                        "alpha": float(alpha),
+                        "a": float(a),
+                        "b": float(b),
+                        "q_by_leaf": dict(q_by_leaf),
+                        "tau_by_diff": dict(tau_by_diff),
+                        "k_by_diff": dict(k_by_diff),
+                        "val_metrics": dict(m_val) | {"J_mean": float(j_val_mean)},
+                    }
+
+    search_df = pd.DataFrame(rows)
+    search_csv = out_dir / "search_log.csv"
+    search_df.to_csv(search_csv, index=False)
+
+    if selected is None:
+        raise RuntimeError(f"No feasible partition_crc_v1 policy for seed={seed}. Check: {search_csv}")
+
+    q_by_leaf = {int(k): float(v) for k, v in selected["q_by_leaf"].items()}
+    q_all_vec = np.array([q_by_leaf.get(int(pid), 0.0) for pid in leaf_all], dtype=np.float64)
+    q_test_vec = np.array([q_by_leaf.get(int(pid), 0.0) for pid in leaf_test], dtype=np.float64)
+    p_all_u = np.clip(p_all + q_all_vec, 0.0, 1.0)
+    p_test_u = np.clip(p_test + q_test_vec, 0.0, 1.0)
+
+    a_sel = float(selected["a"])
+    b_sel = float(selected["b"])
+    score_all = (np.clip(p_all_u, 1e-9, 1.0) ** a_sel) / (np.clip(c_norm_all, 1e-6, None) ** b_sel)
+    score_test = (np.clip(p_test_u, 1e-9, 1.0) ** a_sel) / (np.clip(c_norm_test, 1e-6, None) ** b_sel)
+    use_all = _apply_tau_by_diff(diff_all, score_all, selected["tau_by_diff"])
+    use_test = _apply_tau_by_diff(diff_test, score_test, selected["tau_by_diff"])
+    m_all = _conformal_policy_metrics(calib_df, use_all, eps_rel=float(args.epsilon_rel))
+    m_test = _conformal_policy_metrics(test_df, use_test, eps_rel=float(args.epsilon_rel))
+
+    def _save_decisions(path: Path, df: pd.DataFrame, use_fast: np.ndarray, p_upper: np.ndarray, score: np.ndarray, leaf: np.ndarray) -> None:
+        out = df.copy()
+        out["p_upper"] = p_upper.astype(np.float64)
+        out["risk_score"] = score.astype(np.float64)
+        out["use_fast"] = use_fast.astype(bool)
+        out["route"] = np.where(use_fast, "fast", "slow")
+        out["partition_leaf_id"] = np.asarray(leaf, dtype=np.int64)
+        out["probe_used"] = False
+        out.to_parquet(path, index=False)
+
+    calib_dec = out_dir / "calib_decisions.parquet"
+    test_dec = out_dir / "test_decisions.parquet"
+    _save_decisions(calib_dec, calib_df, use_all, p_all_u, score_all, leaf_all)
+    _save_decisions(test_dec, test_df, use_test, p_test_u, score_test, leaf_test)
+
+    gate = {
+        "violation_rate_le_target": bool(m_test["violation_rate"] <= float(args.strict_violation_target) + 1e-12),
+        "violation_ci95_upper_le_target": bool(m_test["violation_rate_ci95"][1] <= float(args.strict_ci_upper_target) + 1e-12),
+    }
+
+    metrics = {
+        "version": "partition_crc_v1",
+        "seed": int(seed),
+        "inputs": dict(input_hashes),
+        "calib_split": dict(calib_split_cfg),
+        "objective": {"T_ref": float(t_ref), "beta": float(beta)},
+        "partitioner": {
+            "type": "DecisionTreeClassifier",
+            "max_leaf_nodes": int(max_leaves),
+            "min_samples_leaf": int(min_leaf),
+            "num_leaves": int(getattr(part, "get_n_leaves", lambda: -1)()),
+        },
+        "strict_targets": {
+            "violation_rate": float(args.strict_violation_target),
+            "ci95_upper": float(args.strict_ci_upper_target),
+        },
+        "selected_policy": {
+            "alpha_conformal": float(selected["alpha"]),
+            "score_power_a": float(a_sel),
+            "score_cost_power_b": float(b_sel),
+            "k_slow_by_difficulty": {k: int(v) for k, v in dict(selected["k_by_diff"]).items()},
+            "tau_by_difficulty": {k: float(v) for k, v in dict(selected["tau_by_diff"]).items()},
+            "q_by_partition_leaf": {str(k): float(v) for k, v in q_by_leaf.items()},
+            "rule": "difficulty-wise thresholded U= p_upper^a / c_norm^b; p_upper has partition-wise split-conformal offsets",
+        },
+        "calib_metrics": dict(m_all),
+        "val_metrics": dict(selected.get("val_metrics", {})),
+        "test_metrics": dict(m_test),
+        "phase8_partition_crc_gate_check": gate,
+        "artifacts": {"search_log_csv": str(search_csv), "calib_decisions_parquet": str(calib_dec), "test_decisions_parquet": str(test_dec)},
+    }
+    metrics_path = out_dir / "policy_metrics.json"
+    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    return {"metrics_path": metrics_path, "metrics": metrics, "calib_decisions": calib_dec, "test_decisions": test_dec}
 
 
 def _merge_probe_split(
@@ -785,7 +2228,11 @@ def _merge_probe_split(
     static_feat_path: Path,
 ) -> pd.DataFrame:
     cf = _read_parquet(cf_path)
-    p5 = _read_parquet(p5_decisions_path)[["sample_name", "use_fast"]].rename(columns={"use_fast": "use_fast_p5"})
+    p5_df = _read_parquet(p5_decisions_path)
+    keep = ["sample_name", "use_fast"]
+    if "risk_score" in p5_df.columns:
+        keep.append("risk_score")
+    p5 = p5_df[keep].rename(columns={"use_fast": "use_fast_p5", "risk_score": "risk_score_p5"})
     probe = _read_parquet(probe_feat_path)
     static = _read_parquet(static_feat_path)
     keep_static = [
@@ -796,6 +2243,7 @@ def _merge_probe_split(
         "global_occ_ratio",
         "distance_ratio",
         "complexity_score",
+        "los_clear",
     ]
     static = static[[c for c in keep_static if c in static.columns]]
     out = cf.merge(p5, on="sample_name", how="inner")
@@ -838,20 +2286,13 @@ def _build_probe_xy(
         "T_fast_ms",
         "search_fast_ms",
         "path_len_fast",
-        # Optional cost proxy: slow-fast runtime delta from counterfactual tables.
-        # This is already used in Phase-5 conformal scoring and in the probe budget constraint,
-        # but including it in the gain predictor improves ranking stability under strict selection.
         "difficulty",
-        "source_dataset",
-        "scenario",
-        "map_id",
-        "ood_family",
     ]
     if bool(include_cost_feature):
-        feat_cols.insert(feat_cols.index("difficulty"), "c")
-    x_train = pd.get_dummies(train_df[feat_cols], columns=["difficulty", "source_dataset", "scenario", "map_id"], drop_first=False)
-    x_val = pd.get_dummies(val_df[feat_cols], columns=["difficulty", "source_dataset", "scenario", "map_id"], drop_first=False)
-    x_test = pd.get_dummies(test_df[feat_cols], columns=["difficulty", "source_dataset", "scenario", "map_id"], drop_first=False)
+        feat_cols.insert(feat_cols.index("difficulty"), "c_hat")
+    x_train = pd.get_dummies(train_df[feat_cols], columns=["difficulty"], drop_first=False)
+    x_val = pd.get_dummies(val_df[feat_cols], columns=["difficulty"], drop_first=False)
+    x_test = pd.get_dummies(test_df[feat_cols], columns=["difficulty"], drop_first=False)
     x_val = x_val.reindex(columns=x_train.columns, fill_value=0)
     x_test = x_test.reindex(columns=x_train.columns, fill_value=0)
     return x_train, x_val, x_test
@@ -870,7 +2311,10 @@ def _probe_pack(df: pd.DataFrame, use_p5_fast: np.ndarray, t_ref: float, beta: f
     q = df["q_rel"].to_numpy(dtype=np.float64)
     t_fast = df["T_fast_ms"].to_numpy(dtype=np.float64)
     t_slow = df["T_slow_ms"].to_numpy(dtype=np.float64)
-    c = df["c"].to_numpy(dtype=np.float64)
+    if "c_hat" not in df.columns:
+        raise RuntimeError("Missing predicted cost feature `c_hat` for probe stage.")
+    c = np.clip(df["c_hat"].to_numpy(dtype=np.float64), 1e-6, None)
+    probe_ms = np.clip(df["probe_runtime_ms"].to_numpy(dtype=np.float64), 0.0, None)
     hard = df["difficulty"].to_numpy() == "hard"
     n = int(len(df))
     n_h = int(np.sum(hard))
@@ -884,16 +2328,19 @@ def _probe_pack(df: pd.DataFrame, use_p5_fast: np.ndarray, t_ref: float, beta: f
     p5_og = float((p5_mean_j - j_oracle_mean) / max(abs(j_oracle_mean), 1e-9))
     p5_hard_pos = float(np.mean(np.where(use_p5_fast, np.maximum(q, 0.0), 0.0)[hard])) if n_h > 0 else 0.0
     p5_route_latency = float(np.mean(np.where(use_p5_fast, t_fast, t_slow)))
-    p5_probe_ms = float(np.mean(df["probe_runtime_ms"].to_numpy(dtype=np.float64)))
-    p5_total_latency = p5_route_latency + p5_probe_ms
+    p5_probe_ms = float(np.mean(probe_ms))
+    # Conformal baseline does not require the probe; probe cost is counted only for probe policies.
+    p5_total_latency = p5_route_latency
 
     return {
         "df": df,
         "n": n,
+        "t_ref": float(t_ref),
         "hard_mask": hard,
         "n_hard": n_h,
         "q_rel": q,
         "c": c,
+        "probe_ms": probe_ms,
         "use_p5_fast": use_p5_fast.astype(bool),
         "j_fast": j_fast,
         "j_slow": j_slow,
@@ -915,15 +2362,33 @@ def _probe_metrics(pack: dict, use_fast: np.ndarray) -> dict:
     j_fast = pack["j_fast"]
     j_slow = pack["j_slow"]
 
-    route_latency = float(np.mean(np.where(use_fast, t_fast, t_slow)))
-    total_latency = route_latency + float(pack["p5_probe_ms"])
-    mean_j = float(np.mean(np.where(use_fast, j_fast, j_slow)))
-    og = float((mean_j - float(pack["j_oracle_mean"])) / max(abs(float(pack["j_oracle_mean"])), 1e-9))
+    t_ref = float(max(float(pack.get("t_ref", 0.0)) or 0.0, 0.0))
+    if t_ref <= 1e-12:
+        # Re-derive a stable scale if not provided.
+        t_ref = float(max(np.median(df["T_slow_ms"].to_numpy(dtype=np.float64)), 1e-9))
+
+    probe_ms = np.asarray(pack.get("probe_ms", np.zeros(len(df), dtype=np.float64)), dtype=np.float64)
+    route_lat_vec = np.where(use_fast, t_fast, t_slow).astype(np.float64)
+    total_lat_vec = route_lat_vec + probe_ms
+
+    route_latency = float(np.mean(route_lat_vec))
+    total_latency = float(np.mean(total_lat_vec))
+
+    ji_route = np.where(use_fast, j_fast, j_slow).astype(np.float64)
+    ji_total = (ji_route + probe_ms / max(t_ref, 1e-9)).astype(np.float64)
+    mean_j_route = float(np.mean(ji_route))
+    mean_j = float(np.mean(ji_total))
+
+    j_oracle_route = np.minimum(np.asarray(j_fast, dtype=np.float64), np.asarray(j_slow, dtype=np.float64))
+    j_oracle_total = (j_oracle_route + probe_ms / max(t_ref, 1e-9)).astype(np.float64)
+    og_route = float((mean_j_route - float(np.mean(j_oracle_route))) / max(abs(float(np.mean(j_oracle_route))), 1e-9))
+    og = float((mean_j - float(np.mean(j_oracle_total))) / max(abs(float(np.mean(j_oracle_total))), 1e-9))
     hard_pos = float(np.mean(np.where(use_fast, np.maximum(q, 0.0), 0.0)[hard])) if int(pack["n_hard"]) > 0 else 0.0
 
     p5_og = float(pack["p5_og"])
     p5_hard_pos = float(pack["p5_hard_pos"])
-    og_improve = float((p5_og - og) / max(abs(p5_og), 1e-9))
+    # For historical comparability, report improvements w.r.t. the route-only oracle gap (probe cost cancels).
+    og_improve = float((p5_og - og_route) / max(abs(p5_og), 1e-9))
     hard_pos_improve = float((p5_hard_pos - hard_pos) / max(abs(p5_hard_pos), 1e-9))
 
     return {
@@ -933,14 +2398,16 @@ def _probe_metrics(pack: dict, use_fast: np.ndarray) -> dict:
         "probe_avg_latency_ms": float(pack["p5_probe_ms"]),
         "total_latency_ms": total_latency,
         "latency_extra_vs_p5_ms": float(total_latency - float(pack["p5_total_latency"])),
+        "mean_J_route": mean_j_route,
         "mean_J": mean_j,
+        "oracle_gap_route": og_route,
         "oracle_gap": og,
         "og_improve_vs_p5": og_improve,
         "hard_delta_l_rel_pos": hard_pos,
         "hard_pos_drel_improve_vs_p5": hard_pos_improve,
         "p5_baseline": {
             "total_latency_ms": float(pack["p5_total_latency"]),
-            "oracle_gap": float(pack["p5_og"]),
+            "oracle_gap_route": float(pack["p5_og"]),
             "hard_delta_l_rel_pos": float(pack["p5_hard_pos"]),
         },
     }
@@ -1120,6 +2587,18 @@ def _run_probe_seed(
         )
     )
 
+    # Fit cost predictor once per seed on calib_train (static features only) and attach c_hat to all splits.
+    _cost_reg, c_hat = _predict_cost_c_hat(
+        seed=int(seed),
+        train_df=calib_train_df,
+        eval_dfs={"calib": calib_df, "val": calib_val_df, "test": test_df},
+        args=args,
+    )
+    calib_train_df["c_hat"] = np.asarray(c_hat["train"], dtype=np.float64)
+    calib_df["c_hat"] = np.asarray(c_hat["calib"], dtype=np.float64)
+    calib_val_df["c_hat"] = np.asarray(c_hat["val"], dtype=np.float64)
+    test_df["c_hat"] = np.asarray(c_hat["test"], dtype=np.float64)
+
     def _j_gain_pos(df: pd.DataFrame) -> np.ndarray:
         t_fast = df["T_fast_ms"].to_numpy(dtype=np.float64)
         t_slow = df["T_slow_ms"].to_numpy(dtype=np.float64)
@@ -1186,15 +2665,11 @@ def _run_probe_seed(
         "T_fast_ms",
         "search_fast_ms",
         "path_len_fast",
-        "c" if bool(getattr(args, "probe_include_cost_feature", False)) else None,
+        "c_hat" if bool(getattr(args, "probe_include_cost_feature", False)) else None,
         "difficulty",
-        "source_dataset",
-        "scenario",
-        "map_id",
-        "ood_family",
     ]
     feat_cols = [c for c in feat_cols if c is not None]
-    x_all = pd.get_dummies(calib_df[feat_cols], columns=["difficulty", "source_dataset", "scenario", "map_id"], drop_first=False)
+    x_all = pd.get_dummies(calib_df[feat_cols], columns=["difficulty"], drop_first=False)
     x_all = x_all.reindex(columns=x_train.columns, fill_value=0)
     if probe_sel_mode in {"grid_search", "conformal_lcb"}:
         gain_all = np.clip(reg.predict(x_all).astype(np.float64), 0.0, None)
@@ -1358,8 +2833,8 @@ def _run_probe_seed(
         _save_dec(test_dec, test_df, use_test, pred_gain_test, score_test)
 
         gate = {
-            "og_improve_ge_5pct": bool(m_test["og_improve_vs_p5"] >= float(args.probe_og_improve_target) - 1e-12),
-            "hard_pos_improve_ge_10pct": bool(m_test["hard_pos_drel_improve_vs_p5"] >= float(args.probe_hard_pos_improve_target) - 1e-12),
+            "og_improve_ge_target": bool(m_test["og_improve_vs_p5"] >= float(args.probe_og_improve_target) - 1e-12),
+            "hard_pos_improve_ge_target": bool(m_test["hard_pos_drel_improve_vs_p5"] >= float(args.probe_hard_pos_improve_target) - 1e-12),
             "backoff_count_zero": True,
         }
         metrics = {
@@ -1493,9 +2968,9 @@ def _run_probe_seed(
         lcb_val = (pred_gain_val - q_val).astype(np.float64)
         lcb_test = (pred_gain_test - q_test).astype(np.float64)
 
-        c_all = calib_df["c"].to_numpy(dtype=np.float64)
-        c_val = calib_val_df["c"].to_numpy(dtype=np.float64)
-        c_test = test_df["c"].to_numpy(dtype=np.float64)
+        c_all = np.clip(calib_df["c_hat"].to_numpy(dtype=np.float64), 1e-6, None)
+        c_val = np.clip(calib_val_df["c_hat"].to_numpy(dtype=np.float64), 1e-6, None)
+        c_test = np.clip(test_df["c_hat"].to_numpy(dtype=np.float64), 1e-6, None)
         score_all = (lcb_all / np.maximum(c_all, 1e-9)).astype(np.float64) + np.arange(lcb_all.size, dtype=np.float64) * 1e-12
         score_val = (lcb_val / np.maximum(c_val, 1e-9)).astype(np.float64) + np.arange(lcb_val.size, dtype=np.float64) * 1e-12
         score_test = (lcb_test / np.maximum(c_test, 1e-9)).astype(np.float64) + np.arange(lcb_test.size, dtype=np.float64) * 1e-12
@@ -1564,8 +3039,8 @@ def _run_probe_seed(
         ).to_csv(search_csv, index=False)
 
         gate = {
-            "og_improve_ge_5pct": bool(m_test["og_improve_vs_p5"] >= float(args.probe_og_improve_target) - 1e-12),
-            "hard_pos_improve_ge_10pct": bool(m_test["hard_pos_drel_improve_vs_p5"] >= float(args.probe_hard_pos_improve_target) - 1e-12),
+            "og_improve_ge_target": bool(m_test["og_improve_vs_p5"] >= float(args.probe_og_improve_target) - 1e-12),
+            "hard_pos_improve_ge_target": bool(m_test["hard_pos_drel_improve_vs_p5"] >= float(args.probe_hard_pos_improve_target) - 1e-12),
             "backoff_count_zero": True,
         }
         metrics = {
@@ -1722,75 +3197,7 @@ def _run_probe_seed(
     search_csv = out_dir / "search_log.csv"
     search_log_df.to_csv(search_csv, index=False)
 
-    # Oracle-assisted fallback on strict branch: used only if model-ranked search cannot satisfy gate.
-    # Uses counterfactual J gain + hard positive risk as score on each split.
-    if selected is None:
-        score_all_oracle = np.maximum(pack_all["j_fast"] - pack_all["j_slow"], 0.0) + 0.5 * np.where(
-            calib_df["difficulty"].to_numpy() == "hard",
-            np.maximum(pack_all["q_rel"], 0.0),
-            0.0,
-        )
-        score_test_oracle = np.maximum(pack_test["j_fast"] - pack_test["j_slow"], 0.0) + 0.5 * np.where(
-            test_df["difficulty"].to_numpy() == "hard",
-            np.maximum(pack_test["q_rel"], 0.0),
-            0.0,
-        )
-        score_val_oracle = np.maximum(pack_val["j_fast"] - pack_val["j_slow"], 0.0) + 0.5 * np.where(
-            calib_val_df["difficulty"].to_numpy() == "hard",
-            np.maximum(pack_val["q_rel"], 0.0),
-            0.0,
-        )
-        score_search_oracle = score_test_oracle if search_on == "test" else score_val_oracle
-        fallback = _probe_search_k_by_diff(
-            search_pack=search_pack,
-            search_df=search_split_df,
-            score_search=score_search_oracle,
-            og_target=float(args.probe_og_improve_target),
-            hard_target=float(args.probe_hard_pos_improve_target),
-            lat_target_ms=float(args.probe_latency_extra_target_ms),
-            grid_divisor=int(max(args.probe_grid_divisor, 20)),
-        )
-        if fallback is not None:
-            k_by_diff = {"easy": int(fallback[0]), "medium": int(fallback[1]), "hard": int(fallback[2])}
-            use_search, _tau_tmp = _apply_probe_k_by_diff(
-                search_split_df, score_search_oracle, use_p5_fast=search_pack["use_p5_fast"], k_by_diff=k_by_diff
-            )
-            m_eval = _probe_metrics(search_pack, use_search)
-            gate_select = bool(
-                m_eval["og_improve_vs_p5"] >= float(args.probe_og_improve_target) - 1e-12
-                and m_eval["hard_pos_drel_improve_vs_p5"] >= float(args.probe_hard_pos_improve_target) - 1e-12
-            )
-            rows.append(
-                {
-                    "gain_power": -1.0,
-                    "w_hard": -1.0,
-                    "w_bottleneck": -1.0,
-                    "w_stall": -1.0,
-                    "k_slow_easy": int(k_by_diff["easy"]),
-                    "k_slow_medium": int(k_by_diff["medium"]),
-                    "k_slow_hard": int(k_by_diff["hard"]),
-                    "search_og_improve_vs_p5": float(m_eval["og_improve_vs_p5"]),
-                    "search_hard_pos_improve_vs_p5": float(m_eval["hard_pos_drel_improve_vs_p5"]),
-                    "search_latency_extra_vs_p5_ms": float(m_eval["latency_extra_vs_p5_ms"]),
-                    "feasible_on_search": True,
-                    "selection_split": str(search_on),
-                    "feasible_on_selection": bool(gate_select),
-                    "oracle_assist_used": True,
-                }
-            )
-            search_log_df = pd.DataFrame(rows)
-            search_log_df.to_csv(search_csv, index=False)
-            if gate_select:
-                selected = {
-                    "key": (float(m_eval["latency_extra_vs_p5_ms"]), -float(m_eval["og_improve_vs_p5"]), -float(m_eval["hard_pos_drel_improve_vs_p5"])),
-                    "gain_power": -1.0,
-                    "w_hard": -1.0,
-                    "w_bottleneck": -1.0,
-                    "w_stall": -1.0,
-                    "k_by_diff": k_by_diff,
-                    "oracle_assist_used": True,
-                    "selection_metrics": m_eval,
-                }
+    # NOTE(validity): oracle-assisted probe selection is disabled in strict mode.
 
     if selected is None:
         if bool(getattr(args, "enforce_gate", True)):
@@ -1803,10 +3210,19 @@ def _run_probe_seed(
             f"[phase8][probe] no strict-feasible policy for seed={seed} on selection_split={search_on}; "
             "falling back to best-effort selection under the same latency budget (targets not enforced)."
         )
+        pred_search = gain_test if search_on == "test" else gain_val
+        score_search_fallback = _build_probe_score(
+            search_split_df,
+            np.clip(pred_search.astype(np.float64), 0.0, None),
+            gain_power=1.0,
+            w_hard=0.0,
+            w_bottle=0.0,
+            w_stall=0.0,
+        )
         relaxed = _probe_search_k_by_diff(
             search_pack=search_pack,
             search_df=search_split_df,
-            score_search=score_search_oracle,
+            score_search=score_search_fallback,
             og_target=float(args.probe_og_improve_target),
             hard_target=float(args.probe_hard_pos_improve_target),
             lat_target_ms=float(args.probe_latency_extra_target_ms),
@@ -1819,15 +3235,15 @@ def _run_probe_seed(
             )
         k_by_diff = {"easy": int(relaxed[0]), "medium": int(relaxed[1]), "hard": int(relaxed[2])}
         use_search, _tau_tmp = _apply_probe_k_by_diff(
-            search_split_df, score_search_oracle, use_p5_fast=search_pack["use_p5_fast"], k_by_diff=k_by_diff
+            search_split_df, score_search_fallback, use_p5_fast=search_pack["use_p5_fast"], k_by_diff=k_by_diff
         )
         m_eval = _probe_metrics(search_pack, use_search)
         rows.append(
             {
-                "gain_power": -2.0,
-                "w_hard": -2.0,
-                "w_bottleneck": -2.0,
-                "w_stall": -2.0,
+                "gain_power": 1.0,
+                "w_hard": 0.0,
+                "w_bottleneck": 0.0,
+                "w_stall": 0.0,
                 "k_slow_easy": int(k_by_diff["easy"]),
                 "k_slow_medium": int(k_by_diff["medium"]),
                 "k_slow_hard": int(k_by_diff["hard"]),
@@ -1837,7 +3253,7 @@ def _run_probe_seed(
                 "feasible_on_search": True,
                 "selection_split": str(search_on),
                 "feasible_on_selection": False,
-                "oracle_assist_used": True,
+                "oracle_assist_used": False,
                 "relaxed_targets_used": True,
             }
         )
@@ -1849,53 +3265,45 @@ def _run_probe_seed(
                 -float(m_eval["og_improve_vs_p5"]),
                 -float(m_eval["hard_pos_drel_improve_vs_p5"]),
             ),
-            "gain_power": -2.0,
-            "w_hard": -2.0,
-            "w_bottleneck": -2.0,
-            "w_stall": -2.0,
+            "gain_power": 1.0,
+            "w_hard": 0.0,
+            "w_bottleneck": 0.0,
+            "w_stall": 0.0,
             "k_by_diff": k_by_diff,
-            "oracle_assist_used": True,
+            "oracle_assist_used": False,
             "selection_metrics": m_eval,
+            "relaxed_targets_used": True,
         }
 
     # Final evaluation on calib/test is performed once for the selected hyperparameters.
     k_by_diff = dict(selected["k_by_diff"])
-    oracle_assist_used = bool(selected.get("oracle_assist_used", False))
-    if oracle_assist_used:
-        pred_gain_all = np.maximum(pack_all["j_fast"] - pack_all["j_slow"], 0.0)
-        pred_gain_val = np.maximum(pack_val["j_fast"] - pack_val["j_slow"], 0.0)
-        pred_gain_test = np.maximum(pack_test["j_fast"] - pack_test["j_slow"], 0.0)
-        score_all = score_all_oracle
-        score_val = score_val_oracle
-        score_test = score_test_oracle
-    else:
-        pred_gain_all = gain_all
-        pred_gain_val = gain_val
-        pred_gain_test = gain_test
-        score_all = _build_probe_score(
-            calib_df,
-            pred_gain_all,
-            gain_power=float(selected["gain_power"]),
-            w_hard=float(selected["w_hard"]),
-            w_bottle=float(selected["w_bottleneck"]),
-            w_stall=float(selected["w_stall"]),
-        )
-        score_val = _build_probe_score(
-            calib_val_df,
-            pred_gain_val,
-            gain_power=float(selected["gain_power"]),
-            w_hard=float(selected["w_hard"]),
-            w_bottle=float(selected["w_bottleneck"]),
-            w_stall=float(selected["w_stall"]),
-        )
-        score_test = _build_probe_score(
-            test_df,
-            pred_gain_test,
-            gain_power=float(selected["gain_power"]),
-            w_hard=float(selected["w_hard"]),
-            w_bottle=float(selected["w_bottleneck"]),
-            w_stall=float(selected["w_stall"]),
-        )
+    pred_gain_all = gain_all
+    pred_gain_val = gain_val
+    pred_gain_test = gain_test
+    score_all = _build_probe_score(
+        calib_df,
+        pred_gain_all,
+        gain_power=float(selected["gain_power"]),
+        w_hard=float(selected["w_hard"]),
+        w_bottle=float(selected["w_bottleneck"]),
+        w_stall=float(selected["w_stall"]),
+    )
+    score_val = _build_probe_score(
+        calib_val_df,
+        pred_gain_val,
+        gain_power=float(selected["gain_power"]),
+        w_hard=float(selected["w_hard"]),
+        w_bottle=float(selected["w_bottleneck"]),
+        w_stall=float(selected["w_stall"]),
+    )
+    score_test = _build_probe_score(
+        test_df,
+        pred_gain_test,
+        gain_power=float(selected["gain_power"]),
+        w_hard=float(selected["w_hard"]),
+        w_bottle=float(selected["w_bottleneck"]),
+        w_stall=float(selected["w_stall"]),
+    )
 
     use_cal, tau_by_diff = _apply_probe_k_by_diff(calib_df, score_all, use_p5_fast=pack_all["use_p5_fast"], k_by_diff=k_by_diff)
     use_val, _tau_val = _apply_probe_k_by_diff(calib_val_df, score_val, use_p5_fast=pack_val["use_p5_fast"], k_by_diff=k_by_diff)
@@ -1918,8 +3326,8 @@ def _run_probe_seed(
     _save_dec(test_dec, test_df, use_test, pred_gain_test, score_test)
 
     gate = {
-        "og_improve_ge_5pct": bool(m_test["og_improve_vs_p5"] >= float(args.probe_og_improve_target) - 1e-12),
-        "hard_pos_improve_ge_10pct": bool(m_test["hard_pos_drel_improve_vs_p5"] >= float(args.probe_hard_pos_improve_target) - 1e-12),
+        "og_improve_ge_target": bool(m_test["og_improve_vs_p5"] >= float(args.probe_og_improve_target) - 1e-12),
+        "hard_pos_improve_ge_target": bool(m_test["hard_pos_drel_improve_vs_p5"] >= float(args.probe_hard_pos_improve_target) - 1e-12),
         "backoff_count_zero": True,
     }
     metrics = {
@@ -1939,7 +3347,7 @@ def _run_probe_seed(
             "w_hard": float(selected["w_hard"]),
             "w_bottleneck": float(selected["w_bottleneck"]),
             "w_stall": float(selected["w_stall"]),
-            "oracle_assist_used": bool(oracle_assist_used),
+            "oracle_assist_used": bool(selected.get("oracle_assist_used", False)),
             "k_slow_by_difficulty": {k: int(v) for k, v in selected["k_by_diff"].items()},
             "tau_by_difficulty": {k: float(v) for k, v in tau_by_diff.items()},
             "backoff_count": 0,
@@ -1968,7 +3376,7 @@ def _run_probe_seed(
 
 def _write_report(path: Path, stats: dict, seed_df: pd.DataFrame, out_dir: Path) -> None:
     lines: list[str] = []
-    lines.append("# Router Phase8 Strict V1 Report")
+    lines.append("# Router Phase8 Strict V2 Report")
     lines.append("")
     lines.append("## Summary")
     lines.append(f"- Seeds: `{stats['seeds']}`")
@@ -2052,6 +3460,8 @@ def main() -> None:
             "calib_train": int(len(calib_train_df)),
             "calib_val": int(len(calib_val_df)),
         },
+        "strict_violation_target": float(args.strict_violation_target),
+        "strict_ci_upper_target": float(args.strict_ci_upper_target),
     }
 
     input_parquets = {
@@ -2065,6 +3475,14 @@ def main() -> None:
     input_hashes = {k: sha256_file(v) for k, v in input_parquets.items()}
 
     rows: list[dict] = []
+
+    def _align_use_fast(df: pd.DataFrame, decisions_parquet: Path) -> np.ndarray:
+        dec = pd.read_parquet(decisions_parquet)[["sample_name", "use_fast"]]
+        merged = df[["sample_name"]].merge(dec, on="sample_name", how="left")
+        if merged["use_fast"].isna().any():
+            miss = merged.loc[merged["use_fast"].isna(), "sample_name"].astype(str).tolist()[:5]
+            raise RuntimeError(f"Missing use_fast after merge from {decisions_parquet}: examples={miss}")
+        return merged["use_fast"].to_numpy(dtype=bool)
 
     for seed in seeds:
         print(f"[phase8] seed={seed}")
@@ -2086,6 +3504,19 @@ def main() -> None:
             calib_split_cfg=calib_split_cfg,
         )
         conf_metrics = conf_res["metrics"]
+
+        if bool(getattr(args, "emit_partition_crc", False)):
+            _run_partition_crc_seed(
+                seed=int(seed),
+                calib_df=calib_df_full,
+                calib_train_df=calib_train_df,
+                calib_val_df=calib_val_df,
+                test_df=test_df_full,
+                args=args,
+                out_dir=seed_dir / "partition_crc_v1",
+                input_hashes=input_hashes,
+                calib_split_cfg=calib_split_cfg,
+            )
 
         probe_calib_df = _merge_probe_split(
             cf_path=args.calib_parquet,
@@ -2126,6 +3557,103 @@ def main() -> None:
         )
         probe_metrics = probe_res["metrics"]
 
+        # Step12-R recovery variants (optional; strict semantics; no test tuning).
+        t_ref = float(probe_metrics["objective"]["T_ref"])
+        beta = float(probe_metrics["objective"]["beta"])
+        if bool(getattr(args, "emit_probe_voi_gate", False)):
+            _run_probe_voi_gate_seed(
+                seed=int(seed),
+                calib_train_df=probe_train_df,
+                calib_val_df=probe_val_df,
+                test_df=probe_test_df,
+                use_fast_p5_train=probe_train_df["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast_p5_val=probe_val_df["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast_p5_test=probe_test_df["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast_probe_train=_align_use_fast(probe_train_df, Path(probe_res["calib_decisions"])),
+                use_fast_probe_val=_align_use_fast(probe_val_df, Path(probe_res["calib_decisions"])),
+                use_fast_probe_test=_align_use_fast(probe_test_df, Path(probe_res["test_decisions"])),
+                t_ref=float(t_ref),
+                beta=float(beta),
+                alpha=float(getattr(args, "probe_voi_alpha", 0.10)),
+                threshold_quantiles=int(getattr(args, "probe_voi_threshold_quantiles", 81)),
+                out_dir=seed_dir / "probe_selective_v1",
+                input_hashes=input_hashes,
+                calib_split_cfg=calib_split_cfg,
+            )
+
+        if bool(getattr(args, "emit_probe_boundary_gate", False)):
+            tau_by_diff = conf_metrics.get("selected_policy", {}).get("tau_by_difficulty", {})
+            _run_probe_boundary_gate_seed(
+                seed=int(seed),
+                calib_val_df=probe_val_df,
+                test_df=probe_test_df,
+                use_fast_p5_val=probe_val_df["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast_p5_test=probe_test_df["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast_probe_val=_align_use_fast(probe_val_df, Path(probe_res["calib_decisions"])),
+                use_fast_probe_test=_align_use_fast(probe_test_df, Path(probe_res["test_decisions"])),
+                tau_by_diff={str(k): float(v) for k, v in dict(tau_by_diff).items()},
+                t_ref=float(t_ref),
+                beta=float(beta),
+                delta_quantiles=int(getattr(args, "probe_boundary_quantiles", 41)),
+                out_dir=seed_dir / "probe_boundary_v1",
+                input_hashes=input_hashes,
+                calib_split_cfg=calib_split_cfg,
+            )
+
+        if bool(getattr(args, "emit_probe_risktrade", False)):
+            _run_probe_risktrade_seed(
+                seed=int(seed),
+                calib_train_df=probe_train_df,
+                calib_val_df=probe_val_df,
+                test_df=probe_test_df,
+                use_fast_p5_val=probe_val_df["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast_p5_test=probe_test_df["use_fast_p5"].to_numpy(dtype=bool),
+                t_ref=float(t_ref),
+                beta=float(beta),
+                eps_rel=float(args.epsilon_rel),
+                risk_alpha=float(getattr(args, "probe_risktrade_alpha", 0.10)),
+                threshold_quantiles=int(getattr(args, "probe_risktrade_threshold_quantiles", 81)),
+                include_cost_feature=bool(getattr(args, "probe_include_cost_feature", False)),
+                out_dir=seed_dir / "probe_risktrade_v1",
+                input_hashes=input_hashes,
+                calib_split_cfg=calib_split_cfg,
+            )
+
+        if bool(getattr(args, "emit_probe_prefixreuse", False)):
+            _run_probe_prefixreuse_seed(
+                seed=int(seed),
+                calib_df=probe_calib_df,
+                calib_val_df=probe_val_df,
+                test_df=probe_test_df,
+                use_fast_p5_calib=probe_calib_df["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast_p5_val=probe_val_df["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast_p5_test=probe_test_df["use_fast_p5"].to_numpy(dtype=bool),
+                use_fast_probe_calib=_align_use_fast(probe_calib_df, Path(probe_res["calib_decisions"])),
+                use_fast_probe_val=_align_use_fast(probe_val_df, Path(probe_res["calib_decisions"])),
+                use_fast_probe_test=_align_use_fast(probe_test_df, Path(probe_res["test_decisions"])),
+                t_ref=float(t_ref),
+                beta=float(beta),
+                out_dir=seed_dir / "probe_prefixreuse_v1",
+                input_hashes=input_hashes,
+                calib_split_cfg=calib_split_cfg,
+            )
+
+        if bool(getattr(args, "emit_trace_switch", False)):
+            _run_trace_switch_seed(
+                seed=int(seed),
+                calib_train_df=probe_train_df,
+                calib_val_df=probe_val_df,
+                test_df=probe_test_df,
+                t_ref=float(t_ref),
+                beta=float(beta),
+                alpha=float(getattr(args, "trace_switch_alpha", 0.10)),
+                threshold_quantiles=int(getattr(args, "trace_switch_threshold_quantiles", 81)),
+                overhead_mode=str(getattr(args, "trace_switch_overhead_mode", "trace_slow_only")),
+                out_dir=seed_dir / "trace_switch_v1",
+                input_hashes=input_hashes,
+                calib_split_cfg=calib_split_cfg,
+            )
+
         rows.append(
             {
                 "seed": int(seed),
@@ -2152,21 +3680,17 @@ def main() -> None:
     gate = {
         "five_seeds_completed": bool(len(seed_df) == len(seeds)),
         "backoff_count_zero": bool(backoff_total == 0),
-        "strict_violation_rate_le_8pct": bool((seed_df["conf_violation_rate"] <= float(args.strict_violation_target) + 1e-12).all()),
-        "strict_violation_ci95_upper_le_9pct": bool(
-            (seed_df["conf_violation_ci_up"] <= float(args.strict_ci_upper_target) + 1e-12).all()
-        ),
-        "probe_og_improve_ge_5pct": bool(
-            (seed_df["probe_og_improve_vs_p5_pct"] >= float(args.probe_og_improve_target) * 100.0 - 1e-12).all()
-        ),
-        "probe_hard_pos_improve_ge_10pct": bool(
+        "strict_violation_rate_le_target": bool((seed_df["conf_violation_rate"] <= float(args.strict_violation_target) + 1e-12).all()),
+        "strict_violation_ci95_upper_le_target": bool((seed_df["conf_violation_ci_up"] <= float(args.strict_ci_upper_target) + 1e-12).all()),
+        "probe_og_improve_ge_target": bool((seed_df["probe_og_improve_vs_p5_pct"] >= float(args.probe_og_improve_target) * 100.0 - 1e-12).all()),
+        "probe_hard_pos_improve_ge_target": bool(
             (seed_df["probe_hard_pos_improve_vs_p5_pct"] >= float(args.probe_hard_pos_improve_target) * 100.0 - 1e-12).all()
         ),
     }
     all_pass = bool(all(gate.values()))
 
     stats = {
-        "version": "router_phase8_strict_v1",
+        "version": "router_phase8_strict_v2",
         "seeds": [int(s) for s in seeds],
         "runtime_hours": float((time.perf_counter() - t0) / 3600.0),
         "backoff_count_total": int(backoff_total),

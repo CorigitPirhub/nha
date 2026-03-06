@@ -2,9 +2,18 @@
 
 This note is a **paper-facing** alignment aid: it states how our method maps to close NeurIPS/ICML-adjacent prior work, and documents the *direct baseline implementations* used to prevent “this is just CDT/CRC applied” rejections.
 
+Protocol references:
+- frozen protocol source of truth: `docs/router_protocol_v1.md`
+- current-mainline companion note: `docs/router_protocol_v1_current_mainline_note.md`
+- frozen paper-facing claim contract: `paper/router_current_mainline_claim_contract.md`
+
+Interpretation note:
+- this file mainly records the **historical dual-path/direct-baseline alignment** under Protocol V1;
+- the **current strict-positive mainline** has already switched to the zero-probe weighted-search line, so any paper-facing reading of this note should be paired with `paper/router_current_mainline_claim_contract.md`.
+
 ## 1. Mapping: what part of our router corresponds to what literature?
 
-We view dual-path routing as **risk-bounded adaptive computation**: choose a low-latency action (`fast`) or a higher-quality reference action (`slow`) under a frozen risk event (see `docs/router_protocol_v1.md`).
+Historical note: the old dual-path line viewed routing as **risk-bounded adaptive computation** over `fast/slow`: choose a low-latency action (`fast`) or a higher-quality reference action (`slow`) under a frozen risk event (see `docs/router_protocol_v1.md`). The current mainline should instead be read through `paper/router_current_mainline_claim_contract.md` as **single-search compute shaping** over weighted-search arms.
 
 ### Conformal decision / risk control (CDT / CRC)
 Our **static** routing stage (“use `fast` unless risk-per-compute is too high”) is conceptually aligned with:
@@ -70,18 +79,22 @@ What changes under strict audit:
 - Neither (A) ours vs best direct baseline, nor (B) best direct baseline vs P5 achieves `p<0.01` under the frozen bootstrap protocol in this strict rerun.
 - In most seeds, ours matches the best direct baseline essentially exactly (see `outputs/router_phase22_direct_baselines_v2_calibsplit/tables/seed_metrics.csv`), i.e. the “incremental method advantage” is **not established** under the strict selection protocol.
 
-### Key outcome (strict recovery v6; protocol-clean + main-claim-valid)
-This project now includes a strict, protocol-clean recovery that restores significance without any test-set tuning:
-- Strict audit report (single source of truth): `reports/router_strict_audit_v1.md`
-- Phase22 strict (recovery) artifacts:
-  - Report: `reports/router_phase22_direct_baselines_v4_strict_knapsack.md`
-  - Stats: `outputs/router_phase22_direct_baselines_v4_strict_knapsack/stats.json`
-  - Paper table: `paper/tables_router_v11_strict_knapsack/table_phase22_direct_baselines.csv`
+### Key outcome (strict full audit v2; deployable semantics)
+Strict full-audit artifacts (single source of truth):
+- Strict audit report: `reports/router_strict_audit_v2.md`
+- Strict bundle (hash-tracked): `outputs/final_v5_strict/manifest.json`
+- Phase22 strict artifacts:
+  - Report: `reports/router_phase22_direct_baselines_v5_strict_alpha05_probeT_noleak.md`
+  - Stats: `outputs/router_phase22_direct_baselines_v5_strict_alpha05_probeT_noleak/stats.json`
+  - Paper table: `paper/tables_router_v12_strict_alpha05_probeT_noleak/table_phase22_direct_baselines.csv`
 
-Outcome under strict recovery:
-- The best direct baseline remains `cdt_worstcase_j_v1`.
-- (A) **Ours vs best direct baseline** is a significant win under the frozen bootstrap protocol (`p<0.01`, CI not crossing 0).
-- (B) Best direct baseline vs P5 is also significant in this recovered strict rerun.
+Outcome under strict full audit:
+- The best direct baseline is `cdt_worstcase_j_v1`.
+- (A) **Ours vs best direct baseline** is **not** a win under strict semantics: mean `J`-improve is negative and the pooled bootstrap does not support `p<0.01`.
+- (B) Best direct baseline vs P5 is also **not** significant at `p<0.01` under strict.
+
+Interpretation:
+- Under the frozen protocol with deployable semantics (probe runtime counted; no oracle per-sample cost; no dataset-ID features), the “incremental method advantage” over CDT/CRC-style direct baselines is **not established** and the performance-facing claim must be reframed.
 
 ### Paper-facing implication
 To avoid overclaiming novelty, we should **not** position Algorithm 1 alone as a new ML method beyond CDT/CRC.
@@ -93,8 +106,8 @@ Instead, the safe and defensible positioning is:
 
 Strict-audit update to the claim style:
 - Under the strict protocol, point (2) must be stated precisely: the monotone-safe probe guarantees non-increasing risk, but improving `J` is an empirical question that must be validated under strict selection/search.
-- With Phase27 strict recovery (`reports/router_strict_audit_v1.md`), the incremental `J` gain (including vs direct CDT/CRC baselines) is now supported under strict audit; the paper can therefore keep a performance-facing main claim, but should still retain the strict-v2 failure mode as an explicit limitation / ablation narrative.
+- Under strict full audit v2 (`reports/router_strict_audit_v2.md`), the empirical evidence currently indicates **no `J` gain** (and slight degradation) for the probe router; the paper should therefore treat probe as a *risk-safe escalation mechanism* whose net `J` benefit depends on amortizing/cheapening probe or increasing route-only gains.
 
 This alignment note therefore reduces novelty risk in two ways:
 1) we explicitly implement CDT/CRC-style baselines under the frozen protocol, and  
-2) we record both historical (legacy) and protocol-clean (strict) outcomes, so the paper can make defensible claims regardless of whether strict recovery succeeds.
+2) we record both historical (legacy) and protocol-clean (strict) outcomes, so the paper can make defensible claims even when strict evidence forces a performance claim reframe.

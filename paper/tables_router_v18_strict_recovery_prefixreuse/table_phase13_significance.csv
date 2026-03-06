@@ -1,0 +1,2 @@
+n_pooled,pooled_mean_delta_j,pooled_std_delta_j,pooled_ci95_low,pooled_ci95_high,pooled_p_value_bootstrap_gt0,seed_level_p_value_wilcoxon
+16090,-0.05416084417794536,0.18961440284122777,-0.05709208754102119,-0.05120144194982046,1.0,1.0

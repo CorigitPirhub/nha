@@ -22,6 +22,25 @@ from utils.parquet_guard import INPUTS_SHA256_FILENAME, write_record
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Phase-13 SOTA fairness and significance evaluation runner.")
     p.add_argument("--phase9-root", type=Path, default=Path("outputs/router_phase9_bench_v1"))
+    p.add_argument(
+        "--ours-policy-dirname",
+        type=str,
+        default="probe_strict_v2",
+        help="Which per-seed policy directory to treat as 'ours' under phase9_root/router_eval/seeds/seed_*/mixed/ "
+        "(default: probe_strict_v2; recovery: probe_selective_v1 / probe_boundary_v1 / probe_risktrade_v1).",
+    )
+    p.add_argument(
+        "--ours-root",
+        type=Path,
+        default=None,
+        help="Optional external per-seed root for ours: <root>/seeds/seed_*/{test_decisions.parquet,policy_metrics.json}.",
+    )
+    p.add_argument(
+        "--ours-arm-table-test",
+        type=Path,
+        default=None,
+        help="Optional weighted-arm counterfactual test parquet used when ours emits route_arm instead of use_fast.",
+    )
     p.add_argument("--phase12-stats", type=Path, default=Path("outputs/router_phase12_realworld_v1/stats.json"))
     p.add_argument(
         "--external-baselines-csv",
@@ -79,21 +98,105 @@ def _safe_wilcoxon_gt0(x: np.ndarray) -> float:
     return float(wilcoxon(x, alternative="greater", zero_method="pratt").pvalue)
 
 
+def _resolve_policy_time_length(
+    df: pd.DataFrame,
+    *,
+    use_fast: np.ndarray | None = None,
+    route_arm: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    if route_arm is not None:
+        route_arm_arr = np.asarray(route_arm, dtype=str)
+        if route_arm_arr.shape[0] != len(df):
+            raise ValueError(f"route_arm shape mismatch: {route_arm_arr.shape} vs n={len(df)}")
+        route_arm = route_arm_arr
+        use_fast = None
+    elif use_fast is None:
+        raise ValueError("Exactly one of use_fast or route_arm must be provided.")
+
+    if route_arm is None:
+        uf = np.asarray(use_fast, dtype=bool)
+        t = np.where(uf, df["T_fast_ms"].to_numpy(dtype=np.float64), df["T_slow_ms"].to_numpy(dtype=np.float64))
+        l = np.where(uf, df["L_fast"].to_numpy(dtype=np.float64), df["L_slow"].to_numpy(dtype=np.float64))
+        return t.astype(np.float64), l.astype(np.float64), float(np.mean(uf.astype(np.float64)))
+
+    arms = np.asarray(route_arm, dtype=str)
+    t = np.full(len(df), np.nan, dtype=np.float64)
+    l = np.full(len(df), np.nan, dtype=np.float64)
+    for arm in sorted({str(x) for x in arms.tolist()}):
+        mask = arms == arm
+        if arm == "fast":
+            t_col = "T_fast_ms"
+            l_col = "L_fast"
+        elif arm == "slow":
+            t_col = "T_slow_ms"
+            l_col = "L_slow"
+        else:
+            tag = arm[3:] if arm.startswith("wa_") else arm
+            t_col = f"T_{tag}_ms"
+            l_col = f"L_{tag}"
+        if t_col not in df.columns or l_col not in df.columns:
+            raise KeyError(f"Missing weighted-arm columns for arm={arm}: {t_col}, {l_col}")
+        t[mask] = df.loc[mask, t_col].to_numpy(dtype=np.float64)
+        l[mask] = df.loc[mask, l_col].to_numpy(dtype=np.float64)
+    if np.isnan(t).any() or np.isnan(l).any():
+        raise RuntimeError("Unresolved route_arm values during policy evaluation.")
+    return t.astype(np.float64), l.astype(np.float64), float(np.mean((arms == "fast").astype(np.float64)))
+
+
+
+def _route_fast_mask(*, use_fast: np.ndarray | None = None, route_arm: np.ndarray | None = None) -> np.ndarray:
+    if route_arm is not None:
+        return (np.asarray(route_arm, dtype=str) == "fast").astype(np.float64)
+    if use_fast is None:
+        raise ValueError("Either use_fast or route_arm must be provided.")
+    return np.asarray(use_fast, dtype=np.float64)
+
+
+
+def _compute_probe_overhead_ms(
+    df: pd.DataFrame,
+    *,
+    use_fast: np.ndarray | None = None,
+    route_arm: np.ndarray | None = None,
+    probe_used: np.ndarray | None = None,
+    overhead_mode: str = "additive",
+) -> np.ndarray:
+    if probe_used is None:
+        return np.zeros(len(df), dtype=np.float64)
+    used = np.asarray(probe_used, dtype=np.float64)
+    if used.shape[0] != len(df):
+        raise ValueError(f"probe_used shape mismatch: {used.shape} vs n={len(df)}")
+    fast_mask = _route_fast_mask(use_fast=use_fast, route_arm=route_arm)
+    probe_runtime = df["probe_runtime_ms"].to_numpy(dtype=np.float64)
+    infer_slow = df["infer_slow_ms"].to_numpy(dtype=np.float64)
+    mode = str(overhead_mode).lower().strip()
+    if mode in {"trace_slow_overlap_infer", "trace_overlap_infer_slow_only", "overlap_infer_slow_only"}:
+        return np.maximum(probe_runtime - infer_slow, 0.0) * used * (1.0 - fast_mask)
+    if mode in {"prefix_reuse", "prefix_reuse_fast_only", "prefixreuse"}:
+        return probe_runtime * used * fast_mask
+    if mode in {"trace_slow_only", "trace_prefix_slow_only", "slow_only"}:
+        return probe_runtime * used * (1.0 - fast_mask)
+    return probe_runtime * used
+
+
+
 def _eval_policy(
     df: pd.DataFrame,
-    use_fast: np.ndarray,
+    use_fast: np.ndarray | None,
     t_ref: float,
     beta: float,
     epsilon_rel: float,
+    *,
+    route_arm: np.ndarray | None = None,
+    extra_time_ms: np.ndarray | None = None,
 ) -> dict:
-    uf = np.asarray(use_fast, dtype=bool)
-    t_fast = df["T_fast_ms"].to_numpy(dtype=np.float64)
-    t_slow = df["T_slow_ms"].to_numpy(dtype=np.float64)
-    l_fast = df["L_fast"].to_numpy(dtype=np.float64)
+    t, l, use_fast_ratio = _resolve_policy_time_length(df, use_fast=use_fast, route_arm=route_arm)
     l_slow = df["L_slow"].to_numpy(dtype=np.float64)
 
-    t = np.where(uf, t_fast, t_slow)
-    l = np.where(uf, l_fast, l_slow)
+    extra = np.zeros(len(df), dtype=np.float64) if extra_time_ms is None else np.asarray(extra_time_ms, dtype=np.float64)
+    if extra.shape[0] != len(df):
+        raise ValueError(f"extra_time_ms shape mismatch: {extra.shape} vs n={len(df)}")
+    t = t + extra
     drel = (l - l_slow) / np.maximum(l_slow, 1e-6)
     ji = t / max(float(t_ref), 1e-6) + float(beta) * np.maximum(drel, 0.0)
 
@@ -102,8 +205,9 @@ def _eval_policy(
         "V": float(np.mean(drel > float(epsilon_rel))),
         "J_i": ji,
         "drel": drel,
-        "use_fast_ratio": float(np.mean(uf.astype(np.float64))),
+        "use_fast_ratio": float(use_fast_ratio),
     }
+
 
 
 def _ensure_exists(path: Path, name: str) -> None:
@@ -188,15 +292,24 @@ def main() -> None:
     cf_test = args.phase9_root / "common" / "router_counterfactual_test.parquet"
     risk_test = args.phase9_root / "common" / "risk" / "test_decisions.parquet"
     feat_test = args.phase9_root / "common" / "risk" / "features_test.parquet"
+    probe_test = args.phase9_root / "router_eval" / "common" / "probe_features_test.parquet"
     _ensure_exists(cf_test, "counterfactual test parquet")
     _ensure_exists(risk_test, "risk_v1 test decisions")
     _ensure_exists(feat_test, "risk features test")
+    _ensure_exists(probe_test, "probe features test")
     _ensure_exists(args.external_baselines_csv, "external baselines csv")
     _ensure_exists(args.phase12_stats, "phase12 stats")
+    if args.ours_arm_table_test is not None:
+        _ensure_exists(args.ours_arm_table_test, "ours weighted-arm test parquet")
+
+    ours_arm_test_df = None
+    if args.ours_arm_table_test is not None:
+        ours_arm_test_df = pd.read_parquet(args.ours_arm_table_test)
 
     cf = pd.read_parquet(cf_test)
     risk_df = pd.read_parquet(risk_test)[["sample_name", "use_fast"]].rename(columns={"use_fast": "use_fast_risk_v1"})
     feat_df = pd.read_parquet(feat_test)[["sample_name", "difficulty", "use_fast_current", "use_fast_default"]]
+    probe_df = pd.read_parquet(probe_test)[["sample_name", "probe_runtime_ms"]]
 
     ext = pd.read_csv(args.external_baselines_csv)
     ext_methods = sorted(ext["method"].dropna().astype(str).unique().tolist())
@@ -217,11 +330,15 @@ def main() -> None:
     ext_summary_csv = args.tables_dir / "table_phase13_external_sota_summary.csv"
     ext_summary.to_csv(ext_summary_csv, index=False)
 
-    base_df = cf.merge(risk_df, on="sample_name", how="left").merge(
-        feat_df, on=["sample_name", "difficulty"], how="left"
+    base_df = (
+        cf.merge(risk_df, on="sample_name", how="left")
+        .merge(feat_df, on=["sample_name", "difficulty"], how="left")
+        .merge(probe_df, on="sample_name", how="left")
     )
     if base_df[["use_fast_risk_v1", "use_fast_current", "use_fast_default"]].isna().any().any():
         raise RuntimeError("Missing baseline routing decisions after merge.")
+    if base_df["probe_runtime_ms"].isna().any():
+        raise RuntimeError("Missing probe_runtime_ms after merge.")
 
     seed_rows: list[dict] = []
     pooled_delta_j: list[np.ndarray] = []
@@ -232,46 +349,95 @@ def main() -> None:
 
     for seed in seeds:
         seed_root = args.phase9_root / "router_eval" / "seeds" / f"seed_{seed}" / "mixed"
-        probe_dec = seed_root / "probe_strict_v2" / "test_decisions.parquet"
+        ours_dir = (args.ours_root / "seeds" / f"seed_{seed}") if args.ours_root is not None else (seed_root / str(args.ours_policy_dirname))
+        probe_dec = ours_dir / "test_decisions.parquet"
         conf_dec = seed_root / "conformal_strict_v2" / "test_decisions.parquet"
-        probe_metrics = seed_root / "probe_strict_v2" / "policy_metrics.json"
+        probe_metrics = ours_dir / "policy_metrics.json"
         _ensure_exists(probe_dec, f"probe decisions (seed={seed})")
         _ensure_exists(conf_dec, f"conformal decisions (seed={seed})")
         _ensure_exists(probe_metrics, f"probe policy metrics (seed={seed})")
 
-        dec_probe = pd.read_parquet(probe_dec)[["sample_name", "use_fast"]].rename(columns={"use_fast": "use_fast_probe"})
+        dec_probe_df = pd.read_parquet(probe_dec)
+        if "use_fast" not in dec_probe_df.columns and "route_arm" not in dec_probe_df.columns:
+            raise RuntimeError(f"Ours decisions must contain use_fast or route_arm (seed={seed}).")
+        cols = ["sample_name"]
+        merge_keys = ["sample_name"]
+        if "difficulty" in dec_probe_df.columns:
+            cols.append("difficulty")
+            merge_keys = ["sample_name", "difficulty"]
+        if "use_fast" in dec_probe_df.columns:
+            cols.append("use_fast")
+        if "route_arm" in dec_probe_df.columns:
+            cols.append("route_arm")
+        if "probe_used" in dec_probe_df.columns:
+            cols.append("probe_used")
+        dec_probe = dec_probe_df[cols].rename(
+            columns={"use_fast": "use_fast_probe", "route_arm": "route_arm_probe", "probe_used": "probe_used"}
+        )
+        if "probe_used" not in dec_probe.columns:
+            dec_probe["probe_used"] = False if "route_arm_probe" in dec_probe.columns else True
         dec_conf = pd.read_parquet(conf_dec)[["sample_name", "use_fast"]].rename(columns={"use_fast": "use_fast_conformal"})
         m_probe = _load_json(probe_metrics)
         t_ref = float(m_probe["objective"]["T_ref"])
         beta = float(m_probe["objective"]["beta"])
+        overhead_mode = str(m_probe.get("probe_overhead_mode", "additive")).lower().strip()
 
-        df = base_df.merge(dec_probe, on="sample_name", how="left").merge(dec_conf, on="sample_name", how="left")
-        if df[["use_fast_probe", "use_fast_conformal"]].isna().any().any():
+        df = base_df.merge(dec_probe, on=merge_keys, how="left").merge(dec_conf, on="sample_name", how="left")
+        if "route_arm_probe" in df.columns:
+            if ours_arm_test_df is None:
+                raise RuntimeError("route_arm decisions require --ours-arm-table-test.")
+            df = df.merge(ours_arm_test_df, on=["sample_name", "difficulty"], how="left")
+        required = ["use_fast_conformal"]
+        if "use_fast_probe" in df.columns:
+            required.append("use_fast_probe")
+        if "route_arm_probe" in df.columns:
+            required.append("route_arm_probe")
+        if df[required].isna().any().any():
             raise RuntimeError(f"Missing per-seed decisions after merge (seed={seed}).")
 
+        ours_route_arm = df["route_arm_probe"].to_numpy(dtype=str) if "route_arm_probe" in df.columns else None
+        ours_use_fast = df["use_fast_probe"].to_numpy(dtype=bool) if "use_fast_probe" in df.columns else None
+        ours_probe_used = df["probe_used"].to_numpy(dtype=bool)
+        ours_uses_probe = bool(np.any(ours_probe_used))
+
         policies = {
-            "ours_probe_strict_v2": df["use_fast_probe"].to_numpy(dtype=bool),
-            "conformal_strict_v2": df["use_fast_conformal"].to_numpy(dtype=bool),
-            "risk_v1": df["use_fast_risk_v1"].to_numpy(dtype=bool),
-            "current_v2": df["use_fast_current"].to_numpy(dtype=bool),
-            "default_router": df["use_fast_default"].to_numpy(dtype=bool),
-            "all_fast": np.ones(len(df), dtype=bool),
-            "all_slow": np.zeros(len(df), dtype=bool),
+            "ours": {"use_fast": ours_use_fast, "route_arm": ours_route_arm, "uses_probe": ours_uses_probe},
+            "conformal_strict_v2": {"use_fast": df["use_fast_conformal"].to_numpy(dtype=bool), "route_arm": None, "uses_probe": False},
+            "risk_v1": {"use_fast": df["use_fast_risk_v1"].to_numpy(dtype=bool), "route_arm": None, "uses_probe": False},
+            "current_v2": {"use_fast": df["use_fast_current"].to_numpy(dtype=bool), "route_arm": None, "uses_probe": False},
+            "default_router": {"use_fast": df["use_fast_default"].to_numpy(dtype=bool), "route_arm": None, "uses_probe": False},
+            "all_fast": {"use_fast": np.ones(len(df), dtype=bool), "route_arm": None, "uses_probe": False},
+            "all_slow": {"use_fast": np.zeros(len(df), dtype=bool), "route_arm": None, "uses_probe": False},
         }
 
         evals: dict[str, dict] = {}
-        for name, use_fast in policies.items():
+        for name, spec in policies.items():
+            use_fast = spec["use_fast"]
+            route_arm = spec["route_arm"]
+            uses_probe = bool(spec["uses_probe"])
             evals[name] = _eval_policy(
                 df=df,
                 use_fast=use_fast,
+                route_arm=route_arm,
                 t_ref=t_ref,
                 beta=beta,
                 epsilon_rel=float(args.epsilon_rel),
+                extra_time_ms=(
+                    _compute_probe_overhead_ms(
+                        df,
+                        use_fast=use_fast,
+                        route_arm=route_arm,
+                        probe_used=ours_probe_used,
+                        overhead_mode=overhead_mode,
+                    )
+                    if uses_probe
+                    else None
+                ),
             )
 
         strongest_name = strongest_baseline_fixed
         strongest = evals[strongest_name]
-        ours = evals["ours_probe_strict_v2"]
+        ours = evals["ours"]
 
         j_improve = float((strongest["J_mean"] - ours["J_mean"]) / max(abs(strongest["J_mean"]), 1e-12))
         risk_delta_pct = float((ours["V"] - strongest["V"]) * 100.0)
@@ -377,6 +543,9 @@ def main() -> None:
         "version": "router_phase13_sota_v1",
         "runtime_hours": float((time.perf_counter() - t0) / 3600.0),
         "seeds": seeds,
+        "ours_policy_dirname": str(args.ours_policy_dirname),
+        "ours_root": (str(args.ours_root) if args.ours_root is not None else None),
+        "ours_arm_table_test": (str(args.ours_arm_table_test) if args.ours_arm_table_test is not None else None),
         "counts": {
             "external_strong_baselines": int(len(ext_methods)),
             "public_benchmarks": int(bench_summary["source_dataset"].nunique()),
@@ -413,13 +582,18 @@ def main() -> None:
         "phase9_counterfactual_test_parquet": cf_test,
         "phase9_risk_test_decisions_parquet": risk_test,
         "phase9_risk_features_test_parquet": feat_test,
+        "phase9_probe_features_test_parquet": probe_test,
     }
     for seed in seeds:
         seed_root = args.phase9_root / "router_eval" / "seeds" / f"seed_{seed}" / "mixed"
-        input_parquets[f"seed_{seed}_probe_test_decisions_parquet"] = seed_root / "probe_strict_v2" / "test_decisions.parquet"
+        ours_dir = (args.ours_root / "seeds" / f"seed_{seed}") if args.ours_root is not None else (seed_root / str(args.ours_policy_dirname))
+        input_parquets[f"seed_{seed}_ours_test_decisions_parquet"] = ours_dir / "test_decisions.parquet"
+        input_parquets[f"seed_{seed}_ours_policy_metrics_json"] = ours_dir / "policy_metrics.json"
         input_parquets[f"seed_{seed}_conformal_test_decisions_parquet"] = (
             seed_root / "conformal_strict_v2" / "test_decisions.parquet"
         )
+    if args.ours_arm_table_test is not None:
+        input_parquets["ours_arm_table_test_parquet"] = args.ours_arm_table_test
     write_record(out_dir / INPUTS_SHA256_FILENAME, input_parquets)
 
     print(f"[phase13] stats={stats_path}")

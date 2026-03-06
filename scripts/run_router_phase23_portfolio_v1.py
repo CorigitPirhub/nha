@@ -89,6 +89,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tau-mid-include-eps", action="store_true", default=True)
     p.add_argument("--tau-mid-include-small", action="store_true", default=True, help="Include stricter tau_mid candidates < eps to force slow on some cases.")
     p.add_argument("--sweep-levels", type=int, default=15, help="Number of quantile levels per tau for the aligned sweep grid (used for Pareto check + figure).")
+    p.add_argument(
+        "--strict-features",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If set, drop dataset identifiers (source_dataset/scenario/map_id/ood_family) from model inputs to match strict deployable semantics.",
+    )
     p.add_argument("--out-dir", type=Path, default=Path("outputs/router_phase23_portfolio_v1"))
     p.add_argument("--report-md", type=Path, default=Path("reports/router_phase23_portfolio_v1.md"))
     p.add_argument("--table-csv", type=Path, default=Path("paper/tables_router_v7/table_phase23_portfolio.csv"))
@@ -119,8 +125,7 @@ def _align_dummies(x_ref: pd.DataFrame, x_new: pd.DataFrame) -> pd.DataFrame:
     return x_new.reindex(columns=x_ref.columns, fill_value=0)
 
 
-def _build_xy(calib_df: pd.DataFrame, test_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    # Use only cheap map/query features + categorical dataset identifiers.
+def _build_xy(calib_df: pd.DataFrame, test_df: pd.DataFrame, *, strict_features: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     feat_num = [
         "line_block_ratio",
         "local_occ_ratio",
@@ -128,9 +133,14 @@ def _build_xy(calib_df: pd.DataFrame, test_df: pd.DataFrame) -> tuple[pd.DataFra
         "distance_ratio",
         "complexity_score",
         "los_clear",
-        "ood_family",
     ]
-    feat_cat = ["difficulty", "source_dataset", "scenario", "map_id"]
+    if bool(strict_features):
+        # Strict/deployable: avoid dataset identifiers and split-derived flags.
+        feat_cat = ["difficulty"]
+    else:
+        # Non-strict (legacy diagnostic): include categorical dataset identifiers.
+        feat_num = feat_num + ["ood_family"]
+        feat_cat = ["difficulty", "source_dataset", "scenario", "map_id"]
     x_cal = pd.get_dummies(calib_df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
     x_test = pd.get_dummies(test_df[feat_num + feat_cat], columns=feat_cat, drop_first=False)
     x_test = _align_dummies(x_cal, x_test)
@@ -360,7 +370,7 @@ def main() -> None:
 
     t_ref, beta = _calibrate_beta(calib)
 
-    x_cal, x_test = _build_xy(calib, test)
+    x_cal, x_test = _build_xy(calib, test, strict_features=bool(getattr(args, "strict_features", False)))
 
     # Baselines (no learning).
     base_rows: list[dict] = []

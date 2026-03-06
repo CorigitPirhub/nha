@@ -1,0 +1,2 @@
+claim,n,mean,std,ci95_low,ci95_high,p_value_bootstrap_gt0,p_value_wilcoxon,pass_p_lt_0_01,direction
+pooled_delta_j_router_vs_p5,16090,2.0708371239426437,17.456076593583305,1.8027949269370473,2.343372714472269,0.0,1.0,True,>0

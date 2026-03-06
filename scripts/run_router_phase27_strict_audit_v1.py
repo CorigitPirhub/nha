@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Phase27 strict audit + recovery runner: strict (calib-only selection/search) vs legacy (test tuning diagnostic), "
-        "plus final_v4_strict bundle."
+        description="Phase27 strict audit runner: strict (calib-only selection/search) vs legacy (test tuning diagnostic), "
+        "plus strict final bundle (default: outputs/final_v5_strict)."
     )
     p.add_argument("--seeds", type=str, default="7,11,19,23,31")
     p.add_argument("--device", type=str, default="cpu")
@@ -29,26 +29,29 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--reuse-common-dir",
         type=Path,
-        default=Path("outputs/router_phase9_bench_v2_calibsplit/common"),
+        default=Path("outputs/router_phase9_bench_v7_strict_alpha05_probeT_noleak/common"),
         help="If counterfactual parquets are missing for a run, copy them from this directory to avoid recomputation.",
     )
 
-    # Strict (paper-valid) defaults: use the Phase-8 recovery policy (knapsack_lcb + signed gain + cost-aware feature).
-    p.add_argument("--strict-phase9-out", type=Path, default=Path("outputs/router_phase9_bench_v6_strict_knapsack"))
+    # Strict (paper-valid) defaults: frozen protocol (alpha=0.05) + deployable semantics (probe runtime counted; no oracle per-sample cost;
+    # no dataset-ID categorical features).
+    p.add_argument("--strict-phase9-out", type=Path, default=Path("outputs/router_phase9_bench_v7_strict_alpha05_probeT_noleak"))
     p.add_argument("--legacy-phase9-out", type=Path, default=Path("outputs/router_phase9_bench_v3_legacy_diag"))
-    p.add_argument("--strict-phase13-out", type=Path, default=Path("outputs/router_phase13_sota_v4_strict_knapsack"))
+    p.add_argument("--strict-phase13-out", type=Path, default=Path("outputs/router_phase13_sota_v5_strict_alpha05_probeT_noleak"))
     p.add_argument("--legacy-phase13-out", type=Path, default=Path("outputs/router_phase13_sota_v3_legacy_diag"))
-    p.add_argument("--strict-phase22-out", type=Path, default=Path("outputs/router_phase22_direct_baselines_v4_strict_knapsack"))
+    p.add_argument("--strict-phase22-out", type=Path, default=Path("outputs/router_phase22_direct_baselines_v5_strict_alpha05_probeT_noleak"))
     p.add_argument("--legacy-phase22-out", type=Path, default=Path("outputs/router_phase22_direct_baselines_v3_legacy_diag"))
 
-    p.add_argument("--strict-tables-dir", type=Path, default=Path("paper/tables_router_v11_strict_knapsack"))
+    p.add_argument("--strict-tables-dir", type=Path, default=Path("paper/tables_router_v12_strict_alpha05_probeT_noleak"))
     p.add_argument("--legacy-tables-dir", type=Path, default=Path("paper/tables_router_v8_legacy_diag"))
-    p.add_argument("--strict-audit-report-md", type=Path, default=Path("reports/router_strict_audit_v1.md"))
-    p.add_argument("--ab-table-csv", type=Path, default=Path("paper/tables_router_v11_strict_knapsack/table_phase27_leakage_ab.csv"))
+    p.add_argument("--strict-audit-report-md", type=Path, default=Path("reports/router_strict_audit_v2.md"))
+    p.add_argument("--ab-table-csv", type=Path, default=Path("paper/tables_router_v12_strict_alpha05_probeT_noleak/table_phase27_leakage_ab.csv"))
 
     # Forwarded strict Phase-8 knobs (for reproduction; never tuned on test).
-    p.add_argument("--strict-phase8-tune-violation-margin", type=float, default=0.02)
-    p.add_argument("--strict-phase8-tune-ci-margin", type=float, default=0.015)
+    p.add_argument("--strict-phase8-violation-target", type=float, default=0.05)
+    p.add_argument("--strict-phase8-ci-upper-target", type=float, default=0.05)
+    p.add_argument("--strict-phase8-tune-violation-margin", type=float, default=0.01)
+    p.add_argument("--strict-phase8-tune-ci-margin", type=float, default=0.01)
     p.add_argument("--strict-phase8-probe-include-cost-feature", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument(
         "--strict-phase8-probe-selection-mode",
@@ -57,8 +60,10 @@ def parse_args() -> argparse.Namespace:
         choices=["grid_search", "conformal_lcb", "knapsack_lcb"],
     )
     p.add_argument("--strict-phase8-probe-lcb-alpha", type=float, default=0.25)
+    p.add_argument("--legacy-phase8-violation-target", type=float, default=0.20)
+    p.add_argument("--legacy-phase8-ci-upper-target", type=float, default=0.22)
 
-    p.add_argument("--final-dir", type=Path, default=Path("outputs/final_v4_strict"))
+    p.add_argument("--final-dir", type=Path, default=Path("outputs/final_v5_strict"))
     p.add_argument("--force", action="store_true")
     p.add_argument("--skip-legacy", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--enforce-gate", action=argparse.BooleanOptionalAction, default=True)
@@ -175,6 +180,8 @@ def _run_phase9(
     phase8_calib_split_mode: str,
     phase8_conformal_select_on: str,
     phase8_probe_search_on: str,
+    phase8_strict_violation_target: float,
+    phase8_strict_ci_upper_target: float,
     phase8_strict_tune_violation_margin: float,
     phase8_strict_tune_ci_margin: float,
     phase8_probe_include_cost_feature: bool,
@@ -213,6 +220,10 @@ def _run_phase9(
         str(phase8_conformal_select_on),
         "--probe-search-on",
         str(phase8_probe_search_on),
+        "--phase8-strict-violation-target",
+        str(float(phase8_strict_violation_target)),
+        "--phase8-strict-ci-upper-target",
+        str(float(phase8_strict_ci_upper_target)),
         "--phase8-strict-tune-violation-margin",
         str(float(phase8_strict_tune_violation_margin)),
         "--phase8-strict-tune-ci-margin",
@@ -388,7 +399,7 @@ def _write_strict_audit_report(
     legacy_tables_dir: Path | None,
 ) -> None:
     lines: list[str] = []
-    lines.append("# Router Strict Audit Report (Phase27, v1)")
+    lines.append("# Router Strict Audit Report (Phase27, v2)")
     lines.append("")
     lines.append("## Protocol")
     lines.append("- Strict: select/search only on `calib_train/calib_val`; `test` is used once for final evaluation.")
@@ -437,6 +448,10 @@ def _write_strict_audit_report(
         lines.append("")
 
     lines.append("## Notes")
+    lines.append(
+        "- Strict semantics: frozen protocol \\(\\alpha=0.05\\); probe runtime is counted in latency \\(T\\) for probe-based policies; "
+        "routing uses predicted cost \\(\\hat c(x)\\) (no oracle per-sample `c`) and excludes dataset-ID features."
+    )
     lines.append("- If strict gates fail, main paper claims must be reframed to match strict evidence.")
     lines.append("- This report is the single source of truth for strict vs legacy audit status.")
     lines.append("")
@@ -561,6 +576,8 @@ def main() -> None:
         phase8_calib_split_mode="train_val",
         phase8_conformal_select_on="calib",
         phase8_probe_search_on="calib",
+        phase8_strict_violation_target=float(args.strict_phase8_violation_target),
+        phase8_strict_ci_upper_target=float(args.strict_phase8_ci_upper_target),
         phase8_strict_tune_violation_margin=float(args.strict_phase8_tune_violation_margin),
         phase8_strict_tune_ci_margin=float(args.strict_phase8_tune_ci_margin),
         phase8_probe_include_cost_feature=bool(args.strict_phase8_probe_include_cost_feature),
@@ -613,6 +630,8 @@ def main() -> None:
             phase8_calib_split_mode="none",
             phase8_conformal_select_on="test",
             phase8_probe_search_on="test",
+            phase8_strict_violation_target=float(args.legacy_phase8_violation_target),
+            phase8_strict_ci_upper_target=float(args.legacy_phase8_ci_upper_target),
             phase8_strict_tune_violation_margin=0.14,
             phase8_strict_tune_ci_margin=0.13,
             phase8_probe_include_cost_feature=False,

@@ -1,0 +1,4 @@
+seed,source_dataset,num_cases,mean_delta_j,median_delta_j,mean_delta_j_route_only,mean_probe_overhead_norm,probe_trigger_rate
+7,csm,900,0.06267483949112516,0.0,0.06267483949112516,0.0,0.0
+7,mp,2300,0.026179259309329652,0.0,0.026179259309329652,0.0,0.0
+7,parasol,18,0.0019062980308678968,0.0,0.0019062980308678968,0.0,0.0

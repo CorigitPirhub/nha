@@ -1,0 +1,4 @@
+source_dataset,delta_j_mean,delta_j_std,delta_j_min,delta_j_max,direction_consistent
+csm,-0.0001894588652121572,0.00011547049633620859,-0.0003153440820149055,0.0,True
+mp,-7.978965486534085e-07,1.1327018568414397e-06,-2.741491413646463e-06,0.0,True
+parasol,0.0,0.0,0.0,0.0,True

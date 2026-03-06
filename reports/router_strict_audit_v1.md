@@ -1,5 +1,8 @@
 # Router Strict Audit Report (Phase27, v1)
 
+> ⚠️ **Deprecated (superseded by v2):** After fixing the remaining threats to validity (α alignment, probe runtime counted in \(T\), no oracle per-sample cost, no dataset-ID features),
+> the strict mainline result flips and the performance gates fail. Use `reports/router_strict_audit_v2.md` (and `reports/router_validity_audit_v2.md`) as the current strict single source of truth.
+
 ## Protocol
 - Strict: select/search only on `calib_train/calib_val`; `test` is used once for final evaluation.
 - Legacy (diagnostic): allows `test`-set tuning in Phase-8 (conformal/probe). **Not** valid for main claims.
@@ -32,4 +35,3 @@
 ## Notes
 - If strict gates fail, main paper claims must be reframed to match strict evidence.
 - This report is the single source of truth for strict vs legacy audit status.
-

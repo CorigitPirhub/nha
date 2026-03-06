@@ -1,10 +1,30 @@
-# Final Submission Checklist (V3)
+# Final Submission Checklist (V3 Snapshot + Strict Audit Status)
+
+⚠️ Strict audit update (2026-03-05):
+- Under the fully-audited strict semantics (frozen \(\alpha=0.05\), probe runtime counted in \(T\), no oracle per-sample cost, no dataset-ID features), the Phase9/13/22 **performance-facing** strict claim does **not** hold.
+- Single source of truth: `reports/router_strict_audit_v2.md` + `outputs/final_v5_strict/manifest.json`.
+- This checklist remains useful for **camera-ready V3 snapshot reproducibility**, but is **not sufficient** to justify NeurIPS/ICML main claims without passing the strict audit gates (see Step12 in `TASK.md`).
+
+Protocol references:
+- frozen protocol source of truth: `docs/router_protocol_v1.md`
+- current-mainline companion note: `docs/router_protocol_v1_current_mainline_note.md`
+- frozen paper-facing claim contract: `paper/router_current_mainline_claim_contract.md`
+
+Reading note:
+- this checklist is a **historical V3 snapshot + old strict-audit status** record;
+- the current strict-positive mainline is the weighted-search route described in `paper/router_current_mainline_claim_contract.md` and the newer `Phase29 -> Phase13 -> Phase22` reports.
 
 ## Gate Status
+### Camera-ready V3 bundle (reproducibility)
 - `cold_start_runtime_le_48h`: `True`
 - `hash_consistency_100pct`: `True`
 - `claim_coverage_100pct`: `True`
 - `audit_blocker_zero`: `True`
+
+### Strict audit (Step12 performance gates)
+- `phase9_gain_significant`: `False` (strict)
+- `phase13_sota_significant`: `False` (strict)
+- `phase22_main_result_significant`: `False` (strict)
 
 ## Claim-to-Evidence
 | claim_id | pass | metric | target | evidence |
@@ -35,6 +55,11 @@
 - Container: `docker build -t router-camera-ready-v3 -f artifacts/router_camera_ready_v3/Dockerfile .`
 - Estimated cold-start runtime: `3.456 h` (target <= 48 h)
 
+Strict audit rerun (Phase9→13→22 + strict bundle):
+```bash
+python scripts/run_router_phase27_strict_audit_v1.py --device cpu
+```
+
 ## Hash Audit
 - Hash consistency: `100.00%` (65 / 65)
 - Manifest: `artifacts/router_camera_ready_v3/MANIFEST.sha256`
@@ -43,4 +68,4 @@
 - Step3 (real-hardware longrun) is excluded from NeurIPS/ICML readiness; required for Top-Journal.
 
 ## Blockers
-- `None (0 blocker)`
+- Step12 strict gates fail (performance claim must be reframed): `reports/router_strict_audit_v2.md`

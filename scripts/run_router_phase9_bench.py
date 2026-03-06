@@ -31,6 +31,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tables-dir", type=Path, default=Path("paper/tables_router_v2"))
     p.add_argument("--bootstrap-n", type=int, default=10000)
     p.add_argument(
+        "--ours-policy-dirname",
+        type=str,
+        default="probe_strict_v2",
+        help="Which per-seed policy directory to evaluate under router_eval/seeds/seed_*/mixed/ (default: probe_strict_v2). "
+        "Recovery variants emit probe_selective_v1 / probe_boundary_v1 / probe_risktrade_v1.",
+    )
+    p.add_argument(
         "--direction-tol",
         type=float,
         default=0.01,
@@ -74,25 +81,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--phase8-strict-violation-target",
         type=float,
-        default=0.20,
+        default=0.05,
         help="Forwarded to Phase-8 strict: strict_violation_target (used for final evaluation).",
     )
     p.add_argument(
         "--phase8-strict-ci-upper-target",
         type=float,
-        default=0.22,
+        default=0.05,
         help="Forwarded to Phase-8 strict: strict_ci_upper_target (used for final evaluation).",
     )
     p.add_argument(
         "--phase8-strict-tune-violation-margin",
         type=float,
-        default=0.14,
+        default=0.01,
         help="Forwarded to Phase-8 strict: margin subtracted from strict_violation_target when tuning on the selection split.",
     )
     p.add_argument(
         "--phase8-strict-tune-ci-margin",
         type=float,
-        default=0.13,
+        default=0.01,
         help="Forwarded to Phase-8 strict: margin subtracted from strict_ci_upper_target when tuning on the selection split.",
     )
     p.add_argument(
@@ -114,6 +121,37 @@ def parse_args() -> argparse.Namespace:
         default=0.10,
         help="Forwarded to Phase-8 strict: miscoverage alpha for conformal_lcb mode.",
     )
+
+    # Step12-R recovery variants (forwarded to Phase-8 strict).
+    p.add_argument("--phase8-emit-probe-voi-gate", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--phase8-probe-voi-alpha", type=float, default=0.10)
+    p.add_argument("--phase8-probe-voi-threshold-quantiles", type=int, default=81)
+    p.add_argument("--phase8-emit-probe-boundary-gate", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--phase8-probe-boundary-quantiles", type=int, default=41)
+    p.add_argument("--phase8-emit-probe-risktrade", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--phase8-probe-risktrade-alpha", type=float, default=0.10)
+    p.add_argument("--phase8-probe-risktrade-threshold-quantiles", type=int, default=81)
+    p.add_argument(
+        "--phase8-emit-probe-prefixreuse",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Forwarded to Phase-8 strict: emit probe_prefixreuse_v1 (prefix-reuse accounting: probe cost charged only when final route is fast).",
+    )
+
+    # Step12-R2 recovery variants (forwarded to Phase-8 strict).
+    p.add_argument("--phase8-emit-trace-switch", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--phase8-trace-switch-alpha", type=float, default=0.10)
+    p.add_argument("--phase8-trace-switch-threshold-quantiles", type=int, default=81)
+    p.add_argument(
+        "--phase8-trace-switch-overhead-mode",
+        type=str,
+        default="trace_slow_only",
+        choices=["trace_slow_only", "trace_slow_overlap_infer"],
+        help="Forwarded to Phase-8 strict: trace-switch overhead accounting mode.",
+    )
+    p.add_argument("--phase8-emit-partition-crc", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--phase8-partition-crc-max-leaves", type=int, default=8)
+    p.add_argument("--phase8-partition-crc-min-leaf", type=int, default=80)
 
     # Report path overrides for subroutines (avoid overwriting v1 reports when running audits).
     p.add_argument(
@@ -296,57 +334,99 @@ def _run_router_eval(
 ) -> Path:
     stats = out_dir / "stats.json"
     if args.force or not stats.exists():
-        _run(
-            [
-                sys.executable,
-                "scripts/run_router_phase8_strict.py",
-                "--seeds",
-                ",".join(str(s) for s in seeds),
-                "--dataset-root",
-                str(args.dataset_root),
-                "--calib-parquet",
-                str(calib_pq),
-                "--test-parquet",
-                str(test_pq),
-                "--static-features-calib",
-                str(risk_out / "features_calib.parquet"),
-                "--static-features-test",
-                str(risk_out / "features_test.parquet"),
-                "--probe-features-calib",
-                str(out_dir / "common" / "probe_features_calib.parquet"),
-                "--probe-features-test",
-                str(out_dir / "common" / "probe_features_test.parquet"),
-                "--strict-violation-target",
-                str(float(args.phase8_strict_violation_target)),
-                "--strict-ci-upper-target",
-                str(float(args.phase8_strict_ci_upper_target)),
-                "--strict-tune-violation-margin",
-                str(float(args.phase8_strict_tune_violation_margin)),
-                "--strict-tune-ci-margin",
-                str(float(args.phase8_strict_tune_ci_margin)),
-                "--calib-split-mode",
-                str(args.calib_split_mode),
-                "--calib-train-frac",
-                str(float(args.calib_train_frac)),
-                "--calib-split-seed",
-                str(int(args.calib_split_seed)),
-                "--conformal-select-on",
-                str(args.conformal_select_on),
-                "--probe-search-on",
-                str(args.probe_search_on),
-                "--probe-include-cost-feature" if bool(args.phase8_probe_include_cost_feature) else "--no-probe-include-cost-feature",
-                "--probe-selection-mode",
-                str(args.phase8_probe_selection_mode),
-                "--probe-lcb-alpha",
-                str(float(args.phase8_probe_lcb_alpha)),
-                "--no-enforce-gate",
-                "--out-dir",
-                str(out_dir),
-                "--report-md",
-                str(args.router_eval_report_md),
-            ],
-            log_path=log,
-        )
+        cmd = [
+            sys.executable,
+            "scripts/run_router_phase8_strict.py",
+            "--seeds",
+            ",".join(str(s) for s in seeds),
+            "--dataset-root",
+            str(args.dataset_root),
+            "--calib-parquet",
+            str(calib_pq),
+            "--test-parquet",
+            str(test_pq),
+            "--static-features-calib",
+            str(risk_out / "features_calib.parquet"),
+            "--static-features-test",
+            str(risk_out / "features_test.parquet"),
+            "--probe-features-calib",
+            str(out_dir / "common" / "probe_features_calib.parquet"),
+            "--probe-features-test",
+            str(out_dir / "common" / "probe_features_test.parquet"),
+            "--strict-violation-target",
+            str(float(args.phase8_strict_violation_target)),
+            "--strict-ci-upper-target",
+            str(float(args.phase8_strict_ci_upper_target)),
+            "--strict-tune-violation-margin",
+            str(float(args.phase8_strict_tune_violation_margin)),
+            "--strict-tune-ci-margin",
+            str(float(args.phase8_strict_tune_ci_margin)),
+            "--calib-split-mode",
+            str(args.calib_split_mode),
+            "--calib-train-frac",
+            str(float(args.calib_train_frac)),
+            "--calib-split-seed",
+            str(int(args.calib_split_seed)),
+            "--conformal-select-on",
+            str(args.conformal_select_on),
+            "--probe-search-on",
+            str(args.probe_search_on),
+            "--probe-include-cost-feature" if bool(args.phase8_probe_include_cost_feature) else "--no-probe-include-cost-feature",
+            "--probe-selection-mode",
+            str(args.phase8_probe_selection_mode),
+            "--probe-lcb-alpha",
+            str(float(args.phase8_probe_lcb_alpha)),
+        ]
+        if bool(args.phase8_emit_probe_voi_gate):
+            cmd += [
+                "--emit-probe-voi-gate",
+                "--probe-voi-alpha",
+                str(float(args.phase8_probe_voi_alpha)),
+                "--probe-voi-threshold-quantiles",
+                str(int(args.phase8_probe_voi_threshold_quantiles)),
+            ]
+        if bool(args.phase8_emit_probe_boundary_gate):
+            cmd += [
+                "--emit-probe-boundary-gate",
+                "--probe-boundary-quantiles",
+                str(int(args.phase8_probe_boundary_quantiles)),
+            ]
+        if bool(args.phase8_emit_probe_risktrade):
+            cmd += [
+                "--emit-probe-risktrade",
+                "--probe-risktrade-alpha",
+                str(float(args.phase8_probe_risktrade_alpha)),
+                "--probe-risktrade-threshold-quantiles",
+                str(int(args.phase8_probe_risktrade_threshold_quantiles)),
+            ]
+        if bool(args.phase8_emit_probe_prefixreuse):
+            cmd += ["--emit-probe-prefixreuse"]
+        if bool(getattr(args, "phase8_emit_trace_switch", False)):
+            cmd += [
+                "--emit-trace-switch",
+                "--trace-switch-alpha",
+                str(float(getattr(args, "phase8_trace_switch_alpha", 0.10))),
+                "--trace-switch-threshold-quantiles",
+                str(int(getattr(args, "phase8_trace_switch_threshold_quantiles", 81))),
+                "--trace-switch-overhead-mode",
+                str(getattr(args, "phase8_trace_switch_overhead_mode", "trace_slow_only")),
+            ]
+        if bool(getattr(args, "phase8_emit_partition_crc", False)):
+            cmd += [
+                "--emit-partition-crc",
+                "--partition-crc-max-leaves",
+                str(int(getattr(args, "phase8_partition_crc_max_leaves", 8))),
+                "--partition-crc-min-leaf",
+                str(int(getattr(args, "phase8_partition_crc_min_leaf", 80))),
+            ]
+        cmd += [
+            "--no-enforce-gate",
+            "--out-dir",
+            str(out_dir),
+            "--report-md",
+            str(args.router_eval_report_md),
+        ]
+        _run(cmd, log_path=log)
     return stats
 
 
@@ -354,41 +434,102 @@ def _compute_benchmark_metrics(
     seeds: list[int],
     cf_test: pd.DataFrame,
     router_dir: Path,
-) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
+    *,
+    ours_policy_dirname: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     seed_rows: list[dict] = []
     pooled_delta: list[np.ndarray] = []
+    pooled_route_only: list[np.ndarray] = []
+    pooled_overhead: list[np.ndarray] = []
+    pooled_probe_used: list[np.ndarray] = []
     by_seed_ds: list[dict] = []
+
+    probe_feat = router_dir / "common" / "probe_features_test.parquet"
+    if not probe_feat.exists():
+        raise FileNotFoundError(probe_feat)
+    probe_df = pd.read_parquet(probe_feat)[["sample_name", "probe_runtime_ms"]]
+    if probe_df.isna().any().any():
+        raise RuntimeError("Missing probe_runtime_ms in probe features parquet.")
 
     for seed in seeds:
         seed_root = router_dir / "seeds" / f"seed_{seed}" / "mixed"
         p5_dec = pd.read_parquet(seed_root / "conformal_strict_v2" / "test_decisions.parquet")[["sample_name", "use_fast"]]
         p5_dec = p5_dec.rename(columns={"use_fast": "use_fast_p5"})
-        p6_dec = pd.read_parquet(seed_root / "probe_strict_v2" / "test_decisions.parquet")[["sample_name", "use_fast"]]
-        p6_dec = p6_dec.rename(columns={"use_fast": "use_fast_router"})
-        m_probe = _load_json(seed_root / "probe_strict_v2" / "policy_metrics.json")
+        ours_dir = seed_root / str(ours_policy_dirname)
+        ours_dec_pq = ours_dir / "test_decisions.parquet"
+        ours_metrics_js = ours_dir / "policy_metrics.json"
+        if not ours_dec_pq.exists():
+            raise FileNotFoundError(ours_dec_pq)
+        if not ours_metrics_js.exists():
+            raise FileNotFoundError(ours_metrics_js)
 
-        t_ref = float(m_probe["objective"]["T_ref"])
-        beta = float(m_probe["objective"]["beta"])
+        ours_dec_df = pd.read_parquet(ours_dec_pq)
+        cols = ["sample_name", "use_fast"]
+        if "probe_used" in ours_dec_df.columns:
+            cols.append("probe_used")
+        ours_dec = ours_dec_df[cols].rename(columns={"use_fast": "use_fast_router"})
+        if "probe_used" not in ours_dec.columns:
+            ours_dec["probe_used"] = True
 
-        df = cf_test.merge(p5_dec, on="sample_name", how="inner").merge(p6_dec, on="sample_name", how="inner")
+        m_ours = _load_json(ours_metrics_js)
+        t_ref = float(m_ours["objective"]["T_ref"])
+        beta = float(m_ours["objective"]["beta"])
+        overhead_mode = str(m_ours.get("probe_overhead_mode", "additive")).lower().strip()
+
+        df = (
+            cf_test.merge(p5_dec, on="sample_name", how="inner")
+            .merge(ours_dec, on="sample_name", how="inner")
+            .merge(probe_df, on="sample_name", how="left")
+        )
         if len(df) != len(cf_test):
             raise RuntimeError(f"Decision merge mismatch on seed {seed}: {len(df)} vs {len(cf_test)}")
+        if df["probe_runtime_ms"].isna().any():
+            raise RuntimeError(f"Missing probe_runtime_ms after merge on seed {seed}.")
 
-        j_fast = df["T_fast_ms"].to_numpy(dtype=np.float64) / max(t_ref, 1e-9) + beta * np.maximum(
-            df["q_rel"].to_numpy(dtype=np.float64), 0.0
-        )
+        # Route-only objective pieces (probe overhead handled separately).
+        j_fast = df["T_fast_ms"].to_numpy(dtype=np.float64) / max(t_ref, 1e-9) + beta * np.maximum(df["q_rel"].to_numpy(dtype=np.float64), 0.0)
         j_slow = df["T_slow_ms"].to_numpy(dtype=np.float64) / max(t_ref, 1e-9)
+        probe_norm = df["probe_runtime_ms"].to_numpy(dtype=np.float64) / max(t_ref, 1e-9)
         j_p5 = np.where(df["use_fast_p5"].to_numpy(dtype=bool), j_fast, j_slow)
-        j_router = np.where(df["use_fast_router"].to_numpy(dtype=bool), j_fast, j_slow)
-        d_j = (j_p5 - j_router).astype(np.float64)
-        pooled_delta.append(d_j)
+        j_router_route = np.where(df["use_fast_router"].to_numpy(dtype=bool), j_fast, j_slow)
+        probe_used = df["probe_used"].to_numpy(dtype=bool)
+        # IMPORTANT(validity): probe/trace runtime is counted in T for J when probe_used, following the selected accounting mode.
+        if overhead_mode in {"prefix_reuse", "prefix_reuse_fast_only", "prefixreuse"}:
+            # Charged only when the final route is fast (probe is discarded).
+            overhead = probe_norm * probe_used.astype(np.float64) * df["use_fast_router"].to_numpy(dtype=np.float64)
+        elif overhead_mode in {"trace_slow_overlap_infer", "trace_overlap_infer_slow_only", "overlap_infer_slow_only"}:
+            # Charged only when the final route is slow, but overlap probe/trace with slow inference (GPU prefetch).
+            if "infer_slow_ms" not in df.columns:
+                raise RuntimeError("Missing infer_slow_ms for overlap-infer overhead accounting.")
+            infer_norm = np.clip(df["infer_slow_ms"].to_numpy(dtype=np.float64), 0.0, None) / max(t_ref, 1e-9)
+            overhead = (
+                np.maximum(probe_norm - infer_norm, 0.0)
+                * probe_used.astype(np.float64)
+                * (1.0 - df["use_fast_router"].to_numpy(dtype=np.float64))
+            )
+        elif overhead_mode in {"trace_slow_only", "trace_prefix_slow_only", "slow_only"}:
+            # Charged only when the final route is slow (fast-prefix trace is wasted on switch).
+            overhead = probe_norm * probe_used.astype(np.float64) * (1.0 - df["use_fast_router"].to_numpy(dtype=np.float64))
+        else:
+            # Additive: always charged when probe_used.
+            overhead = probe_norm * probe_used.astype(np.float64)
+        j_router = j_router_route + overhead
+        d_total = (j_p5 - j_router).astype(np.float64)
+        d_route = (j_p5 - j_router_route).astype(np.float64)
+        pooled_delta.append(d_total)
+        pooled_route_only.append(d_route)
+        pooled_overhead.append(overhead.astype(np.float64))
+        pooled_probe_used.append(probe_used.astype(bool))
 
         seed_rows.append(
             {
                 "seed": int(seed),
-                "mean_delta_j": float(np.mean(d_j)),
-                "median_delta_j": float(np.median(d_j)),
-                "num_cases": int(len(d_j)),
+                "mean_delta_j": float(np.mean(d_total)),
+                "median_delta_j": float(np.median(d_total)),
+                "mean_delta_j_route_only": float(np.mean(d_route)),
+                "mean_probe_overhead_norm": float(np.mean(overhead)),
+                "probe_trigger_rate": float(np.mean(probe_used.astype(np.float64))),
+                "num_cases": int(len(d_total)),
             }
         )
 
@@ -399,15 +540,21 @@ def _compute_benchmark_metrics(
                     "seed": int(seed),
                     "source_dataset": str(ds),
                     "num_cases": int(np.sum(mask)),
-                    "mean_delta_j": float(np.mean(d_j[mask])),
-                    "median_delta_j": float(np.median(d_j[mask])),
+                    "mean_delta_j": float(np.mean(d_total[mask])),
+                    "median_delta_j": float(np.median(d_total[mask])),
+                    "mean_delta_j_route_only": float(np.mean(d_route[mask])),
+                    "mean_probe_overhead_norm": float(np.mean(overhead[mask])),
+                    "probe_trigger_rate": float(np.mean(probe_used[mask].astype(np.float64))),
                 }
             )
 
     seed_df = pd.DataFrame(seed_rows).sort_values("seed").reset_index(drop=True)
     ds_df = pd.DataFrame(by_seed_ds).sort_values(["source_dataset", "seed"]).reset_index(drop=True)
     all_delta = np.concatenate(pooled_delta) if pooled_delta else np.zeros(0, dtype=np.float64)
-    return seed_df, ds_df, all_delta
+    all_route = np.concatenate(pooled_route_only) if pooled_route_only else np.zeros(0, dtype=np.float64)
+    all_over = np.concatenate(pooled_overhead) if pooled_overhead else np.zeros(0, dtype=np.float64)
+    all_probe = np.concatenate(pooled_probe_used) if pooled_probe_used else np.zeros(0, dtype=bool)
+    return seed_df, ds_df, all_delta, all_route, all_over, all_probe
 
 
 def _write_report(path: Path, stats: dict) -> None:
@@ -432,6 +579,12 @@ def _write_report(path: Path, stats: dict) -> None:
     lines.append(f"- `pooled_p_value_bootstrap_gt0`: `{stats['pooled']['p_value_bootstrap_gt0']:.6e}`")
     lines.append(f"- `pooled_p_value_wilcoxon`: `{stats['pooled']['p_value_wilcoxon']:.6e}`")
     lines.append("")
+    if "decomposition" in stats:
+        lines.append("## Decomposition (strict accounting)")
+        lines.append(f"- `pooled_mean_delta_j_route_only`: `{stats['decomposition']['mean_delta_j_route_only']:.6f}`")
+        lines.append(f"- `pooled_mean_probe_overhead_norm`: `{stats['decomposition']['mean_probe_overhead_norm']:.6f}`")
+        lines.append(f"- `pooled_probe_trigger_rate`: `{stats['decomposition']['probe_trigger_rate']:.6f}`")
+        lines.append("")
     lines.append("## Artifacts")
     for k, v in stats["artifacts"].items():
         lines.append(f"- `{k}`: `{v}`")
@@ -525,7 +678,12 @@ def main() -> None:
     )
 
     cf_test = pd.read_parquet(test_pq)
-    seed_df, ds_df, all_delta = _compute_benchmark_metrics(seeds=seeds, cf_test=cf_test, router_dir=router_eval_out)
+    seed_df, ds_df, all_delta, all_route_only, all_overhead, all_probe_used = _compute_benchmark_metrics(
+        seeds=seeds,
+        cf_test=cf_test,
+        router_dir=router_eval_out,
+        ours_policy_dirname=str(args.ours_policy_dirname),
+    )
 
     # Per-benchmark direction consistency.
     ds_summary = (
@@ -636,7 +794,11 @@ def main() -> None:
             "phase8_probe_include_cost_feature": bool(args.phase8_probe_include_cost_feature),
             "phase8_probe_selection_mode": str(args.phase8_probe_selection_mode),
             "phase8_probe_lcb_alpha": float(args.phase8_probe_lcb_alpha),
+            "phase8_emit_probe_voi_gate": bool(args.phase8_emit_probe_voi_gate),
+            "phase8_emit_probe_boundary_gate": bool(args.phase8_emit_probe_boundary_gate),
+            "phase8_emit_probe_risktrade": bool(args.phase8_emit_probe_risktrade),
         },
+        "ours_policy_dirname": str(args.ours_policy_dirname),
         "counts": {
             "num_public_benchmarks": int(n_public_bench),
             "num_public_test_cases": int(n_public_cases),
@@ -648,6 +810,11 @@ def main() -> None:
             "ci95": [float(ci_lo), float(ci_hi)],
             "p_value_bootstrap_gt0": float(p_boot),
             "p_value_wilcoxon": float(p_val),
+        },
+        "decomposition": {
+            "mean_delta_j_route_only": float(np.mean(all_route_only)) if all_route_only.size > 0 else float("nan"),
+            "mean_probe_overhead_norm": float(np.mean(all_overhead)) if all_overhead.size > 0 else float("nan"),
+            "probe_trigger_rate": float(np.mean(all_probe_used.astype(np.float64))) if all_probe_used.size > 0 else float("nan"),
         },
         "direction_by_benchmark": ds_summary.to_dict(orient="records"),
         "gate_check": gate,

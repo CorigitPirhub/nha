@@ -1,52 +1,102 @@
 # TrajectoryPlanning/distill — Repository Entry Points
 
-This repo contains multiple research tracks. The **current submission mainline** is the **Dual-Path Router**.
+This repo contains multiple research tracks. The **current strict submission mainline** is the router track, but its main claim has changed: the live claim is now **Risk-Calibrated Single-Search Compute Shaping / Weighted-Search Tree Portfolio**, while the earlier **Dual-Path Probe Router** is retained only as a historical baseline / audit line.
 
-## Dual-Path Router (Fast / Mid / Slow) — Camera-Ready (V2/V3)
+## Router Mainline — Risk-Calibrated Compute Shaping (Weighted-Search Tree Portfolio)
 
-Given a planning query on a grid map, we **route** between planning “arms”:
-- **fast**: low latency, may incur quality loss,
-- **slow**: higher latency, treated as the *reference-quality* arm,
-- (extension) **mid**: an intermediate arm enabling **K≥3 portfolio routing**.
+Given a planning query on a grid map, the current router no longer spends extra compute on an external probe and then flips `fast -> slow`. Instead, it keeps the **same A* search skeleton** and routes over **internal compute levels** by choosing a heuristic weight `w(x)`:
+- `fast` / `w=1.0`: standard A*
+- `wa_w105 ... wa_w135`: weighted A* arms with different compute-quality tradeoffs
+- `slow`: reference-quality arm (kept as optional fallback in `P`, but not used by the final best policy)
 
-The router is evaluated under a **frozen risk-control protocol**:
-- Protocol: `docs/router_protocol_v1.md` (defaults: `epsilon_rel=0.015`, `alpha=0.05`)
-- Primary metrics: `J` and violation probability `V`
-- Method framing: `docs/neurips_method_v1.md`
-- Theory (multi-arm + prior-shift certificate + two-stage monotone safety): `docs/router_theory_v3.md`
-- Project task book (status + evidence): `TASK.md`
+The current deployable strict-mainline policy is:
+- **`O / TreeWeightPortfolio`**: shallow tree partition over `static + fastgeom + difficulty`, with one weighted-search arm per leaf
+- **`P / TreeWeightSlowFallback`**: same family with optional `slow` fallback; under current strict data it is numerically identical to `O`, because no seed actually uses `slow`
 
-### One-Command Reproduction
+### Current strict status (2026-03-06)
 
-- **NeurIPS/ICML method-level bundle (V3, includes Step6~Step11):**
+Under the fully audited **strict** semantics (frozen `alpha=0.05`, `calib_train/calib_val/test` separation, probe/runtime honest accounting, no dataset-ID leakage, sha256-bound parquet inputs), the old **probe-router** claim does **not** survive, but the new **zero-probe single-search compute-shaping** claim **does** survive end-to-end:
+- Step12-R4 screening: `reports/router_phase29_step12r4_trials_v1.md`
+- Phase13 strict SOTA run (O): `reports/router_phase13_sota_v10_strict_weighted_tree_o.md`
+- Phase22 strict direct-baseline run (O): `reports/router_phase22_direct_baselines_v10_strict_weighted_tree_o.md`
+- Task-book status + honest caveats: `TASK.md`
+- Step14 successor-family screening (`A/B/C/D`) did not yet produce a replacement for `O`; see `reports/router_phase30_step14_trials_v1.md`
+
+Current strict conclusion, in one sentence:
+- **Yes, the strict main conclusion is recovered end-to-end — but only for the new zero-probe single-search compute-shaping method, not for the old dual-path probe-router claim.**
+
+### Frozen paper claim contract (Step 13)
+
+- Exact current paper-facing claim and non-claims: `paper/router_current_mainline_claim_contract.md`
+- Frozen protocol source: `docs/router_protocol_v1.md`
+- Current-mainline protocol mapping: `docs/router_protocol_v1_current_mainline_note.md`
+- Current valid scope: Protocol V1 strict semantics, `L = expansions` + path audit, public strict benchmarks `csm/mp/parasol`
+
+### Main evidence to read first
+
+- Strict source root: `outputs/router_phase9_bench_v7_strict_alpha05_probeT_noleak`
+- Phase29 weighted-search screening summary: `outputs/router_phase29_step12r4_trials_v1/summary.json`
+- Best policy artifacts (O): `outputs/router_phase29_o_tree_weight_v1/`
+- Phase13 strict downstream result (O): `outputs/router_phase13_sota_v10_strict_weighted_tree_o/stats.json`
+- Phase22 strict downstream result (O): `outputs/router_phase22_direct_baselines_v10_strict_weighted_tree_o/stats.json`
+- Legacy strict audit for the abandoned probe-router claim: `reports/router_strict_audit_v2.md`
+
+### Reproducing the current strict mainline
+
+- **Step12-R4 weighted-search family screening:**
   ```bash
-  bash artifacts/router_camera_ready_v3/reproduce_main_tables_figures.sh
+  python scripts/run_router_phase29_step12r4_trials_v1.py
   ```
-- **Robotics/system bundle (V2, includes Step1/2/4/5):**
+- **Phase13 strict downstream evaluation (best policy O):**
   ```bash
-  bash artifacts/router_camera_ready_v2/reproduce_main_tables_figures.sh
+  python scripts/run_router_phase13_sota.py \
+    --phase9-root outputs/router_phase9_bench_v7_strict_alpha05_probeT_noleak \
+    --ours-root outputs/router_phase29_o_tree_weight_v1 \
+    --ours-policy-dirname ignored \
+    --ours-arm-table-test outputs/router_phase29_step12r4_trials_v1/common/router_counterfactual_test_wastar.parquet \
+    --out-dir outputs/router_phase13_sota_v10_strict_weighted_tree_o \
+    --report-md reports/router_phase13_sota_v10_strict_weighted_tree_o.md \
+    --tables-dir paper/tables_router_v24_strict_weighted_tree_o \
+    --no-enforce-gate
+  ```
+- **Phase22 strict direct-baseline evaluation (best policy O):**
+  ```bash
+  python scripts/run_router_phase22_direct_baselines.py \
+    --phase9-root outputs/router_phase9_bench_v7_strict_alpha05_probeT_noleak \
+    --ours-root outputs/router_phase29_o_tree_weight_v1 \
+    --ours-policy-dirname ignored \
+    --ours-arm-table-test outputs/router_phase29_step12r4_trials_v1/common/router_counterfactual_test_wastar.parquet \
+    --out-dir outputs/router_phase22_direct_baselines_v10_strict_weighted_tree_o \
+    --report-md reports/router_phase22_direct_baselines_v10_strict_weighted_tree_o.md \
+    --tables-dir paper/tables_router_v25_strict_weighted_tree_o \
+    --no-enforce-gate
   ```
 
-### Container Reproduction
+### Honest caveat for Phase22
 
-```bash
-docker build -t router-camera-ready-v3 -f artifacts/router_camera_ready_v3/Dockerfile .
-docker run --rm -it router-camera-ready-v3
-```
+`Phase22` now evaluates budget parity under `weighted_search_slow_fallback_cap` rather than the old `fast -> slow` flip budget. In the realized best policy, the cap is `0` for all difficulties, so CRC/CDT collapse to the same decision rule as `P5`. This does **not** invalidate the new result, but it means the supporting claim is:
+- **the weighted-search tree portfolio beats both P5 and the matched direct-baseline family under the zero-probe compute-shaping budget semantics**,
+not
+- “the old probe router still wins after strict auditing”.
 
-### Where To Look (Outputs)
+### Where to look (outputs)
 
-- Final bundle (V3): `outputs/final_v3/manifest.json`
-- Camera-ready audit (V3): `artifacts/router_camera_ready_v3/audit_summary.json`
-- Final bundle (V2): `outputs/final_v2/manifest.json`
-- Camera-ready audit (V2): `artifacts/router_camera_ready_v2/audit_summary.json`
+- Step12-R4 report: `reports/router_phase29_step12r4_trials_v1.md`
+- Phase13 strict report (O): `reports/router_phase13_sota_v10_strict_weighted_tree_o.md`
+- Phase22 strict report (O): `reports/router_phase22_direct_baselines_v10_strict_weighted_tree_o.md`
+- Phase13 strict report (P, tie with O): `reports/router_phase13_sota_v10_strict_weighted_tree_p.md`
+- Phase22 strict report (P, tie with O): `reports/router_phase22_direct_baselines_v10_strict_weighted_tree_p.md`
+- Legacy strict audit bundle for the old probe-router line: `outputs/final_v5_strict/manifest.json`
 - Phase reports: `reports/`
 - Paper assets: `paper/tables_router_v*/`, `paper/figures_router_v*/`
 
 ### Notes
 
-- Step 3 (real-hardware longrun) is a **Top-Journal** requirement and is not required for **Top-Conf** or **NeurIPS/ICML** readiness.
-- `README_router.md` is kept for backward compatibility; the router entry point is this README.
+- `docs/router_protocol_v1.md` remains the frozen protocol source of truth.
+- `docs/router_protocol_v1_current_mainline_note.md` explains how the **current weighted-search mainline** maps onto that unchanged frozen protocol.
+- `docs/neurips_method_v1.md` and `docs/router_theory_v3.md` are now **dual-layer** docs; use `paper/router_current_mainline_claim_contract.md` as the frozen paper-facing claim contract, and use those docs for method/theory detail.
+- Step 3 (real-hardware longrun) is still a **Top-Journal** requirement, but it is orthogonal to the current strict method claim.
+- `paper/router_current_mainline_claim_contract.md` is the frozen paper-facing claim entry for the current strict mainline.
 
 ---
 

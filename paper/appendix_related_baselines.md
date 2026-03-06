@@ -2,6 +2,15 @@
 
 This appendix documents the *implementation details* and *fairness/budget* assumptions for the Phase16 baselines.
 
+Protocol references:
+- frozen protocol source of truth: `docs/router_protocol_v1.md`
+- current-mainline companion note: `docs/router_protocol_v1_current_mainline_note.md`
+- frozen paper-facing claim contract: `paper/router_current_mainline_claim_contract.md`
+
+Scope note:
+- this appendix describes the **historical related-baseline families** used around the earlier dual-path line;
+- the current strict mainline should be interpreted together with `paper/router_current_mainline_claim_contract.md`.
+
 ## Protocol and fairness
 - All methods are evaluated on the same Phase9 counterfactual tables: `router_counterfactual_{calib,test}.parquet`.
 - Objective and risk use the frozen protocol (`docs/router_protocol_v1.md`): `J` and `V=P(delta_l_rel>epsilon_rel)`.
@@ -34,4 +43,3 @@ This appendix documents the *implementation details* and *fairness/budget* assum
 - Start from Phase-5 conformal route (`conformal_strict_v2`).
 - Compute a z-scored probe heuristic sum on `calib` P5-fast cases (success/stagnation/dead-end proxies).
 - On `test`, among P5-fast cases, flip the top-`k_slow_by_difficulty[d]` cases (largest score) to slow for each difficulty `d`.
-

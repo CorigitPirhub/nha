@@ -222,9 +222,9 @@ class ConformalStageConfig:
         "T_fast_ms",
         "search_fast_ms",
         "path_len_fast",
-        "ood_family",
     )
-    feature_cat: tuple[str, ...] = ("difficulty", "source_dataset", "scenario", "map_id")
+    # IMPORTANT(validity): avoid dataset identifiers (source_dataset/scenario/map_id) and split-derived flags.
+    feature_cat: tuple[str, ...] = ("difficulty",)
 
 
 @dataclass(frozen=True)
@@ -253,9 +253,9 @@ class ProbeFlipStageConfig:
         "T_fast_ms",
         "search_fast_ms",
         "path_len_fast",
-        "ood_family",
     )
-    probe_feature_cat: tuple[str, ...] = ("difficulty", "source_dataset", "scenario", "map_id")
+    # IMPORTANT(validity): avoid dataset identifiers (source_dataset/scenario/map_id) and split-derived flags.
+    probe_feature_cat: tuple[str, ...] = ("difficulty",)
 
     gain_power: float = 1.0
     w_hard: float = 0.5
