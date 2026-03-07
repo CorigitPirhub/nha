@@ -113,6 +113,12 @@ For the **current** router mainline, the primary artifacts to use are:
 - `scripts/run_router_phase29_step12r4_trials_v1.py`
 - `outputs/router_phase29_step12r4_trials_v1/summary.json`
 - `reports/router_phase29_step12r4_trials_v1.md`
+- `reports/router_phase30_step14_trials_v1.md` (strict successor-family screening for Step 14 phase30 `A/B/C/D`; no candidate was promoted)
+- `reports/router_phase31_step14_fresh_trials_v1.md` (strict successor-family screening for Step 14 phase31 `E/F/G/H`; no candidate was promoted)
+- `reports/router_phase32_step14_tarp_line_v1.md` (strict continuation along the `14-F / TARP-WA` response-regime line; no candidate was promoted)
+- `reports/router_phase32_step14_tarp_line_f2b_hgb_v1.md` (targeted higher-capacity TARP follow-up; no candidate was promoted)
+- `reports/router_phase33_step14_rcwsb_trials_v1.md` (strict final sprint along the `RCWS-B` line; no candidate was promoted)
+- `reports/router_phase33_step14_rcwsb_b1_followup_v1.md` (targeted higher-capacity RCWS-B follow-up; no candidate was promoted)
 
 ### 5.2 Best-policy artifacts
 - `outputs/router_phase29_o_tree_weight_v1/`
@@ -121,6 +127,8 @@ For the **current** router mainline, the primary artifacts to use are:
 Current practical note:
 - `P` is numerically identical to `O` under the present strict data because no seed actually uses `slow`
 - therefore the current mainline should be treated as `O / TreeWeightPortfolio`
+- Step 14 successor families (`RCWS-Q / PCSE / OMWD / SDAC-WA`, later `CARL-WA / TARP-WA / CPSF-WA / CETA-WA`, then the phase32 `TARP-RRSV / TARP-RRMIX / TARP-RRGATE` refinements, and finally the phase33 `RCWS-B` sprint) were screened strictly on `calib_train/calib_val`; none beat `M/N/O` strongly enough to consume `test`
+- therefore `O / TreeWeightPortfolio` remains the only current strict-positive mainline
 
 ### 5.3 Downstream strict chain
 - `outputs/router_phase13_sota_v10_strict_weighted_tree_o/stats.json`

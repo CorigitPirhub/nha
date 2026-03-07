@@ -50,6 +50,7 @@ The above claim is valid only under the following contract:
    - current public strict benchmark sources are `csm`, `mp`, and `parasol`.
 7. **Current authoritative artifact chain**
    - screening / selection: `reports/router_phase29_step12r4_trials_v1.md`
+   - successor screening status: `reports/router_phase30_step14_trials_v1.md`, `reports/router_phase31_step14_fresh_trials_v1.md`, `reports/router_phase32_step14_tarp_line_v1.md`, `reports/router_phase32_step14_tarp_line_f2b_hgb_v1.md`, `reports/router_phase33_step14_rcwsb_trials_v1.md`, and `reports/router_phase33_step14_rcwsb_b1_followup_v1.md` (no replacement promoted)
    - strongest-baseline result: `reports/router_phase13_sota_v10_strict_weighted_tree_o.md`
    - direct-baseline result: `reports/router_phase22_direct_baselines_v10_strict_weighted_tree_o.md`
    - effect-source audit: `reports/router_effect_source_audit_v3.md`
@@ -97,5 +98,6 @@ When writing the main paper text:
 5. if discussing quality, distinguish clearly between:
    - Protocol V1 primary `L = expansions`, and
    - auxiliary path-length / path-cost audits.
+6. if mentioning Step 14 / successor methods, state explicitly that the 2026-03-06/07 strict screenings (`phase30`, `phase31`, the `phase32` TARP-line continuation, and the `phase33` RCWS-B sprint) did **not** promote a replacement for `O / TreeWeightPortfolio`.
 
 If a future Step 14+ method replaces `O / TreeWeightPortfolio` as the current best method, this file should be superseded only after the new method passes the **same strict contract**.

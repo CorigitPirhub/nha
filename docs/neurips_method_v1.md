@@ -16,7 +16,13 @@ Current evidence roots:
 - `reports/router_phase13_sota_v10_strict_weighted_tree_o.md`
 - `reports/router_phase22_direct_baselines_v10_strict_weighted_tree_o.md`
 - `TASK.md`
-- `reports/router_phase30_step14_trials_v1.md` (Step 14 successor-family screening; no replacement promoted yet)
+- `reports/router_phase30_step14_trials_v1.md` (Step 14 successor-family screening, phase30 `A/B/C/D`; no replacement promoted)
+- `reports/router_phase31_step14_fresh_trials_v1.md` (Step 14 successor-family screening, phase31 `E/F/G/H`; no replacement promoted)
+- `reports/router_phase32_step14_tarp_line_v1.md` (Step 14 continuation along the `14-F / TARP-WA` response-regime line; no replacement promoted)
+- `reports/router_phase32_step14_tarp_line_f2b_hgb_v1.md` (targeted higher-capacity follow-up for `TARP-RRMIX`; still no replacement promoted)
+- `reports/router_phase33_step14_rcwsb_trials_v1.md` (final Step 14 sprint along the `RCWS-B` line; no replacement promoted)
+- `reports/router_phase33_step14_rcwsb_b1_followup_v1.md` (higher-capacity follow-up for `RCWS-B-Direct`; still no replacement promoted)
+- `TASK.md` now treats `P0-CX` as the next active RS-grounded base-model innovation line, with frozen candidate routes `RS-Tube / RS-BPF / RS-DVP / RS-PMF`
 
 Historical strict negative evidence:
 - `reports/router_strict_audit_v2.md`

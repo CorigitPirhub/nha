@@ -8,7 +8,8 @@
 > - 旧的 `P5 -> P6` probe-router 线仍保留在仓库里，作为**历史主线 / 理论背景 / 负结果审计对象**；
 > - 当前真正通过 `Phase29 -> Phase13 -> Phase22` 全链路 strict 验证的，是 **零-probe、单搜索内部 compute-shaping** 的 `O / TreeWeightPortfolio`；
 > - 因而本文档以下所有“当前主方法 / 当前主结论 / 当前 strict 口径”均以 `Phase29/13/22` 的新产物为准，而不是以旧 probe-router 的 v5 strict bundle 为准。
-> - `Step 14` 的后继方法筛查（`RCWS-Q / PCSE / OMWD / SDAC-WA`）已完成一轮 strict `calib_train/calib_val` 验证，但本轮没有候选强到足以替换 `O / TreeWeightPortfolio`，详见 `reports/router_phase30_step14_trials_v1.md`。
+> - `Step 14` 的后继方法筛查现已完成四轮 strict `calib_train/calib_val` 验证：`A/B/C/D` 见 `reports/router_phase30_step14_trials_v1.md`，`E/F/G/H` 见 `reports/router_phase31_step14_fresh_trials_v1.md`，沿 `14-F` 主线继续推进的 TARP-line 变体见 `reports/router_phase32_step14_tarp_line_v1.md`（最强定向 follow-up 见 `reports/router_phase32_step14_tarp_line_f2b_hgb_v1.md`），最终 `RCWS-B` 冲刺见 `reports/router_phase33_step14_rcwsb_trials_v1.md`（高容量 follow-up 见 `reports/router_phase33_step14_rcwsb_b1_followup_v1.md`）；四轮都没有候选强到足以替换 `O / TreeWeightPortfolio`。
+> - 当前更高优先级的下一阶段工作已转为 `P0-CX`：在 `RS` 根基之上，通过**基础模型层面**的创新去建立显著优势区间；当前已冻结的候选路线包括 `RS-Tube / RS-BPF / RS-DVP / RS-PMF`，其执行顺序与约束见 `TASK.md`。
 >
 > 术语约定：
 > - **arm / 臂**：可选的计算动作/规划器配置。当前主线中，arm 不是“额外 probe 模块”，而是同一 A* 主搜索内部的不同启发权重，例如 `fast`, `wa_w125`, `wa_w135`, `slow`。

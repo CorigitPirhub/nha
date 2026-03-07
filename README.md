@@ -20,7 +20,7 @@ Under the fully audited **strict** semantics (frozen `alpha=0.05`, `calib_train/
 - Phase13 strict SOTA run (O): `reports/router_phase13_sota_v10_strict_weighted_tree_o.md`
 - Phase22 strict direct-baseline run (O): `reports/router_phase22_direct_baselines_v10_strict_weighted_tree_o.md`
 - Task-book status + honest caveats: `TASK.md`
-- Step14 successor-family screening (`A/B/C/D`) did not yet produce a replacement for `O`; see `reports/router_phase30_step14_trials_v1.md`
+- Step14 successor-family screening (`A/B/C/D` in `phase30`, `E/F/G/H` in `phase31`, the `14-F`-line TARP refinements in `phase32`, and the final `RCWS-B` sprint in `phase33`) still did not produce a replacement for `O`; see `reports/router_phase30_step14_trials_v1.md`, `reports/router_phase31_step14_fresh_trials_v1.md`, `reports/router_phase32_step14_tarp_line_v1.md`, and `reports/router_phase33_step14_rcwsb_trials_v1.md`
 
 Current strict conclusion, in one sentence:
 - **Yes, the strict main conclusion is recovered end-to-end — but only for the new zero-probe single-search compute-shaping method, not for the old dual-path probe-router claim.**

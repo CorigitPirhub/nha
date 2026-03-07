@@ -1,0 +1,46 @@
+{
+  "name": "rs_root_hard_v1",
+  "seed": 7,
+  "resolution": 0.5,
+  "map_size": 96,
+  "protocol_role": "expanded_hard_narrow_benchmark_for_rs_root_claim",
+  "public_anchor_root": "data/benchmark/parasol_narrow/test",
+  "synthetic_per_family": 10,
+  "synthetic_families": [
+    "bug_trap",
+    "alpha_puzzle",
+    "flange",
+    "narrow_passage",
+    "maze",
+    "deadend_labyrinth"
+  ],
+  "splits": {
+    "train": {
+      "num_samples": 0,
+      "scenario_histogram": {},
+      "difficulty_histogram": {},
+      "source_histogram": {},
+      "num_maps": 0
+    },
+    "test": {
+      "num_samples": 78,
+      "scenario_histogram": {
+        "alpha_puzzle": 11,
+        "bug_trap": 11,
+        "deadend_labyrinth": 10,
+        "flange": 15,
+        "maze": 11,
+        "narrow_passage": 14,
+        "parasol_misc": 6
+      },
+      "difficulty_histogram": {
+        "medium": 78
+      },
+      "source_histogram": {
+        "public_anchor": 18,
+        "synthetic_hard": 60
+      },
+      "num_maps": 77
+    }
+  }
+}
