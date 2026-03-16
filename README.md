@@ -102,6 +102,28 @@ not
 
 ## Nonholonomic Neural Heuristic for Hybrid A* (Ackermann)
 
+### Current RS-grounded status (2026-03-09)
+
+Within the nonholonomic track, the currently accepted RS-grounded refinement branch is:
+- **`RS + CX3-D / refined RS-HPG`**
+
+Honest current reading:
+- this branch is a **protected conservative efficiency refinement**, not yet a final high-gain solution;
+- it improves search effort modestly over the same-`alpha` residual baseline while protecting `parasol_misc`;
+- it does **not** yet recover the frozen public success axis to `1.0`.
+
+Read these files first for the current RS-grounded branch:
+- paper-facing claim contract: `paper/rs_cx_current_claim_contract.md`
+- accepted summary: `reports/rs_p0cx3_round1_summary.md`
+- statistical reinforcement: `reports/rs_p0cx3_stats_v1.md`
+- `CX4` first-round implementation summary: `reports/rs_p0cx4_round1_summary.md`
+- `CX5` first-round implementation summary: `reports/rs_p0cx5_round1_summary.md`
+- `CX6` first-round implementation summary: `reports/rs_p0cx6_round1_summary.md`
+- `CX6` lightweight bootstrap note: `reports/rs_p0cx6_stats_v1.md`
+- `CX7` first-round implementation summary: `reports/rs_p0cx7_round1_summary.md`
+- `CX7` lightweight bootstrap note: `reports/rs_p0cx7_stats_v1.md`
+- task-book status, candidate freeze and next-step rationale: `TASK.md`
+
 This project implements a full prototype for TRO-style iterative research:
 
 1. Stage-1 diagnosis of 2D teacher limitations.

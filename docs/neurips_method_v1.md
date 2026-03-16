@@ -22,7 +22,7 @@ Current evidence roots:
 - `reports/router_phase32_step14_tarp_line_f2b_hgb_v1.md` (targeted higher-capacity follow-up for `TARP-RRMIX`; still no replacement promoted)
 - `reports/router_phase33_step14_rcwsb_trials_v1.md` (final Step 14 sprint along the `RCWS-B` line; no replacement promoted)
 - `reports/router_phase33_step14_rcwsb_b1_followup_v1.md` (higher-capacity follow-up for `RCWS-B-Direct`; still no replacement promoted)
-- `TASK.md` now treats `P0-CX` as the next active RS-grounded base-model innovation line, with frozen candidate routes `RS-Tube / RS-BPF / RS-DVP / RS-PMF`
+- `TASK.md` now treats `P0-CX` as the active RS-grounded base-model innovation line; the accepted paper-facing branch remains refined `RS-HPG` (`paper/rs_cx_current_claim_contract.md`), and `CX4`, `CX5`, `CX6`, `CX7` have all been implemented without displacing that accepted branch; the best `CX7` follow-up is only a weak positive (`CX7-C`, `+5.889` average expansions vs accepted `CX3-D`, 95% CI still crossing `0`), so the accepted mainline remains `RS + refined CX3-D / RS-HPG` (`reports/rs_p0cx7_round1_summary.md`, `reports/rs_p0cx7_stats_v1.md`)
 
 Historical strict negative evidence:
 - `reports/router_strict_audit_v2.md`

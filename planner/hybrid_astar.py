@@ -4,7 +4,7 @@ import heapq
 import math
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -30,6 +30,33 @@ class NodeRecord:
     parent: Optional[StateKey]
     steer: float
     direction: int
+    depth: int = 0
+    priority_bias_primary: float = 0.0
+    priority_bias_secondary: float = 0.0
+    segment_states: Tuple[State, ...] = ()
+
+
+@dataclass(frozen=True)
+class SuccessorDecision:
+    skip: bool = False
+    extra_edge_cost: float = 0.0
+    priority_primary_delta: float = 0.0
+    priority_secondary_delta: float = 0.0
+
+
+@dataclass(frozen=True)
+class SuccessorCandidate:
+    primitive_index: int
+    steer: float
+    direction: int
+    next_state: State
+    edge_cost: float
+    anchor: float
+    guided: float
+    sim_info: Optional[dict[str, Any]] = None
+    family: Optional[str] = None
+    source: str = "primitive"
+    segment_states: Optional[Tuple[State, ...]] = None
 
 
 @dataclass
@@ -77,6 +104,7 @@ class HybridAStarPlanner:
         anchor_fn: Optional[HeuristicFn] = None,
         main_mode: str = "anchor",
         record_expanded: bool = False,
+        successor_policy: Optional[Any] = None,
     ) -> PlanResult:
         t0 = time.perf_counter()
         if anchor_fn is None:
@@ -109,6 +137,7 @@ class HybridAStarPlanner:
                 upper_bound=np.inf,
                 stop_on_first_goal=True,
                 record_expanded=record_expanded,
+                successor_policy=successor_policy,
             )
             pre_expansions = warm.expansions
             if warm.success:
@@ -124,6 +153,7 @@ class HybridAStarPlanner:
             upper_bound=upper_bound,
             stop_on_first_goal=False,
             record_expanded=record_expanded,
+            successor_policy=successor_policy,
         )
         total_ms = (time.perf_counter() - t0) * 1000.0
         main.runtime_ms = total_ms
@@ -152,6 +182,7 @@ class HybridAStarPlanner:
         upper_bound: float,
         stop_on_first_goal: bool,
         record_expanded: bool,
+        successor_policy: Optional[Any],
     ) -> PlanResult:
         start_key = self._state_key(*start)
         a0, g0 = h_pair(*start)
@@ -167,6 +198,10 @@ class HybridAStarPlanner:
                 parent=None,
                 steer=0.0,
                 direction=1,
+                depth=0,
+                priority_bias_primary=0.0,
+                priority_bias_secondary=0.0,
+                segment_states=((float(start[0]), float(start[1]), float(start[2])),),
             )
         }
 
@@ -182,6 +217,25 @@ class HybridAStarPlanner:
         best_goal_cost = float(upper_bound)
         expansions = 0
         expanded_xy: List[Tuple[float, float]] = []
+        search_state: dict[str, Any] = {
+            'mode': str(mode),
+            'popped': 0,
+            'expansions': 0,
+            'invalid_successors': 0,
+            'valid_successors': 0,
+            'accepted_successors': 0,
+            'best_goal_cost': float(best_goal_cost),
+            'last_expanded_anchor': float(a0),
+        }
+
+        if successor_policy is not None and hasattr(successor_policy, 'start_search'):
+            successor_policy.start_search(
+                planner=self,
+                start=start,
+                goal=goal,
+                h_pair=h_pair,
+                search_state=search_state,
+            )
 
         while open_heap and expansions < max_expansions:
             primary, _, _, key = heapq.heappop(open_heap)
@@ -201,6 +255,10 @@ class HybridAStarPlanner:
                 continue
             expanded_best_g[key] = rec.g
             expansions += 1
+            search_state['popped'] = int(search_state.get('popped', 0)) + 1
+            search_state['expansions'] = int(expansions)
+            search_state['best_goal_cost'] = float(best_goal_cost)
+            search_state['last_expanded_anchor'] = float(rec.anchor)
             if record_expanded:
                 expanded_xy.append((rec.x, rec.y))
 
@@ -208,6 +266,7 @@ class HybridAStarPlanner:
                 if rec.g < best_goal_cost:
                     best_goal_cost = rec.g
                     best_goal_key = key
+                    search_state['best_goal_cost'] = float(best_goal_cost)
                 if stop_on_first_goal:
                     path = self._reconstruct_path(key, records)
                     return PlanResult(
@@ -222,6 +281,7 @@ class HybridAStarPlanner:
 
             if best_goal_key is not None:
                 min_anchor = self._peek_min_anchor(anchor_heap, records)
+                search_state['current_min_anchor'] = float(min_anchor)
                 if min_anchor >= best_goal_cost - 1e-6:
                     path = self._reconstruct_path(best_goal_key, records)
                     return PlanResult(
@@ -234,21 +294,156 @@ class HybridAStarPlanner:
                         np.asarray(expanded_xy, dtype=np.float32),
                     )
 
-            for steer, direction in self.motion_primitives:
-                nxt = self._simulate(rec.x, rec.y, rec.yaw, steer, direction)
-                if nxt is None:
-                    continue
-                nx, ny, nyaw = nxt
+            node_ctx: Any = None
+            primitive_order = list(range(len(self.motion_primitives)))
+            if successor_policy is not None and hasattr(successor_policy, 'prepare_expand'):
+                prepared = successor_policy.prepare_expand(
+                    planner=self,
+                    record=rec,
+                    goal=goal,
+                    records=records,
+                    open_heap=open_heap,
+                    anchor_heap=anchor_heap,
+                    search_state=search_state,
+                    h_pair=h_pair,
+                )
+                if isinstance(prepared, dict):
+                    node_ctx = prepared
+                    if 'primitive_order' in prepared:
+                        raw_order = [int(i) for i in prepared['primitive_order']]
+                        seen = set()
+                        primitive_order = []
+                        for idx in raw_order:
+                            if 0 <= idx < len(self.motion_primitives) and idx not in seen:
+                                primitive_order.append(idx)
+                                seen.add(idx)
+                        for idx in range(len(self.motion_primitives)):
+                            if idx not in seen:
+                                primitive_order.append(idx)
+                else:
+                    node_ctx = prepared
+
+            invalid_local = 0
+            valid_local = 0
+            accepted_local = 0
+            need_sim_stats = bool(successor_policy is not None and getattr(successor_policy, 'requires_sim_stats', False))
+            raw_candidates: List[SuccessorCandidate] = []
+            for primitive_index in primitive_order:
+                steer, direction = self.motion_primitives[int(primitive_index)]
+                sim_info = self._simulate_detailed(rec.x, rec.y, rec.yaw, steer, direction) if need_sim_stats else None
+                if need_sim_stats:
+                    if not sim_info or not bool(sim_info.get('valid', False)) or sim_info.get('next_state', None) is None:
+                        invalid_local += 1
+                        continue
+                    nx, ny, nyaw = sim_info['next_state']
+                else:
+                    nxt = self._simulate(rec.x, rec.y, rec.yaw, steer, direction)
+                    if nxt is None:
+                        invalid_local += 1
+                        continue
+                    nx, ny, nyaw = nxt
+                valid_local += 1
 
                 edge = self._edge_cost(self.cfg.step_size, steer, rec.steer, direction)
-                ng = rec.g + edge
+                na, nguided = h_pair(nx, ny, nyaw)
+                raw_candidates.append(SuccessorCandidate(
+                    primitive_index=int(primitive_index),
+                    steer=float(steer),
+                    direction=int(direction),
+                    next_state=(float(nx), float(ny), float(nyaw)),
+                    edge_cost=float(edge),
+                    anchor=float(na),
+                    guided=float(nguided),
+                    sim_info=sim_info,
+                    family=None,
+                    source="primitive",
+                    segment_states=((float(nx), float(ny), float(nyaw)),),
+                ))
+
+            if successor_policy is not None and hasattr(successor_policy, 'extra_successors'):
+                extra = successor_policy.extra_successors(
+                    planner=self,
+                    record=rec,
+                    goal=goal,
+                    records=records,
+                    candidates=raw_candidates,
+                    node_ctx=node_ctx,
+                    search_state=search_state,
+                    h_pair=h_pair,
+                )
+                if extra is not None:
+                    for cand in extra:
+                        if isinstance(cand, SuccessorCandidate):
+                            raw_candidates.append(cand)
+
+            ranked_candidates: List[Tuple[SuccessorCandidate, SuccessorDecision]] = [(cand, SuccessorDecision()) for cand in raw_candidates]
+            if successor_policy is not None and hasattr(successor_policy, 'rank_successors'):
+                ranked = successor_policy.rank_successors(
+                    planner=self,
+                    record=rec,
+                    goal=goal,
+                    records=records,
+                    candidates=raw_candidates,
+                    node_ctx=node_ctx,
+                    search_state=search_state,
+                    h_pair=h_pair,
+                )
+                if ranked is not None:
+                    ranked_candidates = []
+                    for item in ranked:
+                        if isinstance(item, tuple) and len(item) == 2:
+                            cand, maybe_decision = item
+                        else:
+                            cand, maybe_decision = item, SuccessorDecision()
+                        if isinstance(maybe_decision, SuccessorDecision):
+                            decision = maybe_decision
+                        else:
+                            decision = SuccessorDecision(
+                                skip=bool(maybe_decision.get('skip', False)),
+                                extra_edge_cost=float(maybe_decision.get('extra_edge_cost', 0.0)),
+                                priority_primary_delta=float(maybe_decision.get('priority_primary_delta', 0.0)),
+                                priority_secondary_delta=float(maybe_decision.get('priority_secondary_delta', 0.0)),
+                            )
+                        ranked_candidates.append((cand, decision))
+
+            for cand, decision in ranked_candidates:
+                if successor_policy is not None and not hasattr(successor_policy, 'rank_successors') and hasattr(successor_policy, 'adjust_successor'):
+                    maybe = successor_policy.adjust_successor(
+                        planner=self,
+                        record=rec,
+                        goal=goal,
+                        records=records,
+                        primitive_index=int(cand.primitive_index),
+                        steer=float(cand.steer),
+                        direction=int(cand.direction),
+                        next_state=cand.next_state,
+                        base_edge_cost=float(cand.edge_cost),
+                        base_anchor=float(cand.anchor),
+                        base_guided=float(cand.guided),
+                        sim_info=cand.sim_info,
+                        node_ctx=node_ctx,
+                        search_state=search_state,
+                        h_pair=h_pair,
+                    )
+                    if isinstance(maybe, SuccessorDecision):
+                        decision = maybe
+                    elif isinstance(maybe, dict):
+                        decision = SuccessorDecision(
+                            skip=bool(maybe.get('skip', False)),
+                            extra_edge_cost=float(maybe.get('extra_edge_cost', 0.0)),
+                            priority_primary_delta=float(maybe.get('priority_primary_delta', 0.0)),
+                            priority_secondary_delta=float(maybe.get('priority_secondary_delta', 0.0)),
+                        )
+                if decision.skip:
+                    continue
+
+                ng = rec.g + float(cand.edge_cost) + float(decision.extra_edge_cost)
                 if ng >= best_goal_cost:
                     continue
-
-                na, nguided = h_pair(nx, ny, nyaw)
-                if ng + na >= best_goal_cost:
+                if ng + float(cand.anchor) >= best_goal_cost:
                     continue
 
+                nx, ny, nyaw = cand.next_state
                 nkey = self._state_key(nx, ny, nyaw)
                 old = records.get(nkey)
                 if old is not None and ng >= old.g - 1e-9:
@@ -259,17 +454,40 @@ class HybridAStarPlanner:
                     y=ny,
                     yaw=nyaw,
                     g=ng,
-                    anchor=float(na),
-                    guided=float(nguided),
+                    anchor=float(cand.anchor),
+                    guided=float(cand.guided),
                     parent=key,
-                    steer=steer,
-                    direction=direction,
+                    steer=float(cand.steer),
+                    direction=int(cand.direction),
+                    depth=int(rec.depth) + 1,
+                    priority_bias_primary=float(decision.priority_primary_delta),
+                    priority_bias_secondary=float(decision.priority_secondary_delta),
+                    segment_states=tuple(cand.segment_states) if cand.segment_states is not None else ((float(nx), float(ny), float(nyaw)),),
                 )
                 records[nkey] = nrec
                 counter += 1
                 p, s = self._priority(nrec, mode)
                 heapq.heappush(open_heap, (p, s, counter, nkey))
-                heapq.heappush(anchor_heap, (ng + na, counter, nkey))
+                heapq.heappush(anchor_heap, (ng + float(cand.anchor), counter, nkey))
+                accepted_local += 1
+
+            search_state['invalid_successors'] = int(search_state.get('invalid_successors', 0)) + int(invalid_local)
+            search_state['valid_successors'] = int(search_state.get('valid_successors', 0)) + int(valid_local)
+            search_state['accepted_successors'] = int(search_state.get('accepted_successors', 0)) + int(accepted_local)
+
+            if successor_policy is not None and hasattr(successor_policy, 'complete_expand'):
+                successor_policy.complete_expand(
+                    planner=self,
+                    record=rec,
+                    goal=goal,
+                    records=records,
+                    node_ctx=node_ctx,
+                    invalid_local=int(invalid_local),
+                    valid_local=int(valid_local),
+                    accepted_local=int(accepted_local),
+                    search_state=search_state,
+                    h_pair=h_pair,
+                )
 
         if best_goal_key is not None:
             path = self._reconstruct_path(best_goal_key, records)
@@ -297,8 +515,14 @@ class HybridAStarPlanner:
         f_anchor = rec.g + rec.anchor
         f_guided = rec.g + rec.guided
         if mode == "guided":
-            return f_guided, f_anchor
-        return f_anchor, f_guided
+            return (
+                f_guided + float(rec.priority_bias_primary),
+                f_anchor + float(rec.priority_bias_secondary),
+            )
+        return (
+            f_anchor + float(rec.priority_bias_primary),
+            f_guided + float(rec.priority_bias_secondary),
+        )
 
     def _peek_min_anchor(
         self,
@@ -334,19 +558,39 @@ class HybridAStarPlanner:
         return c
 
     def _simulate(self, x: float, y: float, yaw: float, steer: float, direction: int) -> Optional[State]:
+        info = self._simulate_detailed(x, y, yaw, steer, direction)
+        nxt = info.get('next_state', None)
+        if not bool(info.get('valid', False)) or nxt is None:
+            return None
+        return nxt
+
+    def _simulate_detailed(self, x: float, y: float, yaw: float, steer: float, direction: int) -> dict[str, Any]:
         n = max(1, int(np.ceil(self.cfg.step_size / self.cfg.collision_check_step)))
         ds = self.cfg.step_size / n
 
         cx, cy, cyaw = x, y, yaw
+        min_clearance = float('inf')
+        end_clearance = float('inf')
         for _ in range(n):
             signed_ds = ds * direction
             cx += signed_ds * math.cos(cyaw)
             cy += signed_ds * math.sin(cyaw)
             cyaw = wrap_to_pi(cyaw + signed_ds * math.tan(steer) / self.vehicle_cfg.wheel_base)
-            if not self._state_is_valid(cx, cy):
-                return None
+            if cx < 0.0 or cy < 0.0 or cx >= self.w * self.resolution or cy >= self.h * self.resolution:
+                return {'valid': False, 'next_state': None, 'min_clearance': -1.0, 'end_clearance': -1.0}
+            if self.esdf is not None:
+                clearance = float(bilinear_interpolate(self.esdf, cx, cy, self.resolution))
+                min_clearance = min(min_clearance, clearance)
+                end_clearance = clearance
+                if clearance <= self.vehicle_clearance:
+                    return {'valid': False, 'next_state': None, 'min_clearance': float(min_clearance), 'end_clearance': float(end_clearance)}
+            elif not self._state_is_valid(cx, cy):
+                return {'valid': False, 'next_state': None, 'min_clearance': -1.0, 'end_clearance': -1.0}
 
-        return cx, cy, cyaw
+        if self.esdf is None:
+            min_clearance = float('nan')
+            end_clearance = float('nan')
+        return {'valid': True, 'next_state': (cx, cy, cyaw), 'min_clearance': float(min_clearance), 'end_clearance': float(end_clearance)}
 
     def _state_is_valid(self, x: float, y: float) -> bool:
         if x < 0.0 or y < 0.0:
@@ -376,11 +620,18 @@ class HybridAStarPlanner:
         goal_key: StateKey,
         records: Dict[StateKey, NodeRecord],
     ) -> np.ndarray:
-        rev: List[Tuple[float, float, float]] = []
+        rev_segments: List[List[Tuple[float, float, float]]] = []
         key: Optional[StateKey] = goal_key
         while key is not None:
             rec = records[key]
-            rev.append((rec.x, rec.y, rec.yaw))
+            seg = list(rec.segment_states) if rec.segment_states else [(rec.x, rec.y, rec.yaw)]
+            rev_segments.append([(float(x), float(y), float(yaw)) for x, y, yaw in seg])
             key = rec.parent
-        rev.reverse()
-        return np.asarray(rev, dtype=np.float32)
+        rev_segments.reverse()
+        path: List[Tuple[float, float, float]] = []
+        for idx, seg in enumerate(rev_segments):
+            if idx == 0:
+                path.extend(seg)
+            else:
+                path.extend(seg)
+        return np.asarray(path, dtype=np.float32)

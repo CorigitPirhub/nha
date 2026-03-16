@@ -1,0 +1,17 @@
+{
+  "data/benchmark/rs_root_hard_v2/dev/sample_000011.npz": "ecb5d374e8ace971df588333db9d87b91183cbfddee1845627929b42550d18eb",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000012.npz": "54da89f2d2fb3857031c9592f19611bc8609b23db6c63b018bd1be6c15dabde8",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000013.npz": "f9ba498d1e5ff4d711b70d4b7701845199733b0219253675a5595e13cc1a1965",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000014.npz": "6ab30d3649a8759a3b2dd5a8ce0905fa9eb47141119cba33e160362409982805",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000015.npz": "a96cea88ac2bef61c916a14c11fd72fbe0f9d3526c8c59541dd5e7b6db2fa62e",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000016.npz": "693698162373e38174aaf6e8079792e19950f3dfd757a96921c329859e530b80",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000035.npz": "42745e5ef8fc95f474856d629956ed0f1f963216fde1b0a586dd8d20173b8e07",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000036.npz": "b8f28fe98498c641e97b0e50b1c4b70f705282fd74a1fbd4c6865f16314aa513",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000037.npz": "40d60f3b8e89985abe5630f0d655f11a05cd4d783a306853d75e52202d9671ee",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000038.npz": "9ca96f71de65d52967bc10c7dd024eacac054c900db09a2a3d738a17f36ecb99",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000039.npz": "82c20eca6863cd3c18923e1fd3756d10eedfa18ec0c6025a539d118368304e14",
+  "data/benchmark/rs_root_hard_v2/dev/sample_000040.npz": "7d9d70e9323ec4baa0bd36ebb86453461afe4d8d065fc7563d066dfd19899eba",
+  "data/benchmark/rs_root_hard_v2/dev_index.csv": "6f5526ff56316c85bbca5ed83d261cdc319a69030bde868d7b2cdd513c63814a",
+  "data/benchmark/rs_root_hard_v2/meta.json": "b438415054f455aacf62891104aea7dd2ea6907d10414cd0fcbdd8da1d307d17",
+  "outputs/checkpoints/exp3_final_manual_v11b.pt": "f73e64dd016792b758ec802f736d8bd9ce4094622e4cf0f2c80f56c723bd448e"
+}

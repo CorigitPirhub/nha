@@ -1,0 +1,4 @@
+sample_name,path,scenario,difficulty,source,map_id,success,expansions,runtime_ms,path_length
+sample_000000.npz,data/benchmark/rs_root_hard_v2/dev/sample_000000.npz,flange,very_hard,parasol_public_anchor,flange_0.95_q000,0,7000.0,1685.303394915536,nan
+sample_000001.npz,data/benchmark/rs_root_hard_v2/dev/sample_000001.npz,flange,hard,parasol_public_anchor,flange_1.0_q000,0,7000.0,1627.9054218903184,nan
+sample_000002.npz,data/benchmark/rs_root_hard_v2/dev/sample_000002.npz,narrow_passage,hard,parasol_public_anchor,ZigZag_q000,0,7000.0,1599.6158581692725,nan
