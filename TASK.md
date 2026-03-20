@@ -209,7 +209,7 @@
 - 至少存在一条可以被诚实写成 “`RS 代价场` 在 XXX 轴上达到当前最优/显著优于强基线” 的根基性结论。
 
 #### P0-CX：基础模型显著优势区间构建（当前 P0 主实施任务）
-状态：`IN_PROGRESS（2026-03-14：CX1-CX26 多轮已推进；accepted 主线仍是 refined CX3-D；CX8-D Heavy ceiling 仍为正但成本过高；CX10/CX11/CX12/CX13/CX15/CX16/CX18/CX19 已冻结失败；CX14 runtime sprint 退化为 public tie；CX17 在 public 上出现小幅正向 ceiling 但 hard-test 未维持转正；CX20 在 public 上重新出现更强正向 ceiling，但 hard-test 明确失败；CX21 首轮 public/mp/csm 实现完成，CX21-B 取得更强 public ceiling 但跨 family 负项与超高 overhead 仍阻止晋升；CX22 首轮 public/mp/csm 实现完成，CX22-D 保留了大部分 flange 增益且低于 `CX21-B` overhead，但仍未形成稳定 overall gain；CX23 首轮 public/mp/csm 实现完成，其中 `CX23-C` 进一步保住 flange 并修复了 narrow_passage，但 maze / parasol_misc 负项仍阻止晋升；CX24 首轮 public/mp/csm 实现完成，其中 `CX24-D` 修复了 maze 但严重削弱 flange，`CX24-E` 补齐了诊断平面，而 `CX24-B/C` 仍未改变 family pattern；CX25 首轮 public/mp/csm 实现完成，但 selective/soft/calibrated/group-stable certificates 仍未把 `flange` 主收益救回来，最有价值产物是 `CX25-B` 的 diagnostic compiler；CX26 design scout 已冻结围绕 `CX24-E + CX24-D` 的 3 条结构修复方案）`
+状态：`IN_PROGRESS（2026-03-20：CX1-CX44 多轮已推进；paper-facing accepted 主线仍暂时保持为 `RS + CX34-A / Subtype-Specific Macro Rescue`。`CX35-B` 已把 singleton custom macro 升级为 typed reverse-pair family，并在 public / hard-test 上保住 `CX34-A` 结论，但其 no-choice ablation 与 full 基本等价，说明仍是 representation-level mechanization。`CX36-B` 进一步把 event-trigger / event-contract 包装为 backward-compatible extension，并在 public 上完整保住 family pattern 同时压低 runtime，但 trigger 仍无 functional activation。`CX37-A` 首轮基于 replay/off-policy sibling states 成功编译出非零 off-slice positive trigger signal（`positive_hits = 236`）；`CX37-B` 将 replay-positive contract 改写成 review scheduler / priority prior 也仍未显化。`CX38-A` 进一步把 replay-positive signal 对齐到 explicit bounded local review target generation，但 public 上仍与 `CX36-B` 完全持平，仅带来轻微 runtime 扰动，说明“review target generation”对象已建立，但仍未形成能改写搜索轨迹的 functional activation。`CX39-A` 首次把 replay-positive signal 接成显式 primitive+macro detour candidate，但 representative public case 上 `replay_active_hits = 0`、public 对 parent 完全持平且 runtime 激增，说明真正缺口不是 review object 缺失，而是 hard event gate 让 bridge-end compatibility 从未上线。`CX39-B` 进一步把 current node 降为 scheduler、把 bridge-end compatibility 升成 witness，并加入 bounded depth-2 bridge search；它首次在 public 上形成**非零 functional activation**，但 activation 仅落在 `sample_000002 / narrow_passage`，带来 `exp_delta = -42.5` 的局部负迁移。`CX39-C` 再把 local counterfactual bridge contract 接到 `CX39-B` 后面后，成功把该误触发完全压掉：public 对 `CX36-B` 回到完全持平、对 `CX39-B` 恢复 `+9.444 exp_delta`，但 runtime 仍偏高。`CX40-A` 进一步将 `CX39-C` 轻量化为 contract-distilled selective bridge cascade，在 public/`mp`/`csm` 全量验证下保持与 `CX39-C` 完全同效，同时把 runtime 相对 `CX39-C` 压低约 `51.5%`。随后 `CX40-B/C/D` 连续围绕 cache 线做了 episode-local memoization、exact train seed cache、abstract prototype seed bank 三轮 follow-up，但都未在保持效果不变的前提下进一步击败 `CX40-A`：三者相对 `CX40-A` 的 runtime 都仍回退约 `+35%`，说明当前瓶颈不是“有没有 cache”，而是 cache 复用粒度与 online computation graph 仍不匹配。`CX41-A` 尝试把 bridge path 改造成 shared bridge-substrate node factoring，但相对 `CX40-A` 反而回退约 `+59.8%` runtime；`CX41-B` 则转向 frontier-dominance review gate，只在 coarse dominant frontier representatives 上触发 bridge review，在 public/`mp`/`csm` 全量验证下保持效果完全不变，同时把 runtime 相对 `CX40-A` 再压低约 `63.0%`，并在 frozen `rs_root_hard_v2` 上保持 success/exp/path 完全不变。`CX42-B` 进一步把 `CX41-B` 作为 `CX34-A` 的 query-level lightweight compatibility release：其 frozen `rs_root_hard_v2` 结果继续保持 `success/exp/path` 完全不变并把 runtime 再下降约 `29.0%`；但统一 public 对齐复现实验 `reports/rs_p0cx42_public_compare_v1.md` 显示它相对 `CX34-A` 仅为 `success/exp` 持平且平均 runtime 略慢（`mean_time_overhead_ratio = +0.010346`），因此当前只能视为 hard-runtime 融合候选，而不是已确认的 public 升级。`CX43-A/B/C/D` 继续沿“把 `CX41-B` 的 selective-computation 机制编译进 `CX34-A`”推进：`CX43-A` 的 support-band rank release 退化明显，`CX43-B/C` 已把退化基本压到 0，但 public runtime 仍略慢；`CX43-D` 进一步用 pre-gated structural release 把 public 恢复到与 `CX34-A` 基本等效（`success/exp` 完全持平，runtime `+0.289%`），成为当前 `CX43` 阶段最稳的兼容层版本，但 release-hit 诊断进一步表明 safe release set 为空。`CX44-A` 进一步把 release object 从 ranking 层上提到 macro review 阶段，做 representative macro review contract：public 上首次出现真实 witness hit，但整体仍略慢（`+0.942%`）；hard 原始 eval 虽给出 `-17.2%` runtime 正信号，但经过 family-stratified Latin-square hard order-audit 后，`CX44-A` 与 `No-Witness-Transfer` 相对 `CX34-A` 都恢复成小幅变慢（约 `+0.85% / +0.94%`），因此当前最可信的结论是：`CX44-A` 已拿到真实 macro-stage activation，但 runtime 仍未被审成负值。`CX44-B` 进一步把 witness transfer 限制到 `parasol_misc / deadend_labyrinth / narrow_passage` 三类 family：public 上相对 `CX34-A` 已经压到近乎完全持平（`mean_time_overhead_ratio = -0.000237`），并在 `parasol_misc` / `narrow_passage` 上转成轻微负值；但在经过 order-audit 的 14-case hard 子集上，`CX44-B (Full)` 仍只是 `+0.000837` 的近似持平，尚未形成稳健负值）`
 是否需要模型/方法修改：`是（允许，但必须直接服务 RS 根基主线）`
 
 目标：
@@ -5958,7 +5958,1833 @@
 3. 下一步若继续推进，应直接面向剩余 stubborn case（尤其 `sample_000007`）设计：
    - 新的 misc-specific action language
    - 或新的 structural witness / classifier
-   而不是继续做全局 family 级别的统一门控。
+
+#### P0-CX33：围绕 `CX32-B / Budgeted Slice Repair` 的 stubborn-misc follow-up
+状态：`COMPLETED-PARTIAL（2026-03-16：围绕 `CX32-B` 连续实现 2 条新分支并完成 public/full-support 验证；misc 再次大幅改善，但引入了小幅 `flange` tax，因此仍未达到最终目标）`
+是否需要模型/方法修改：`是（本轮继续围绕 stubborn misc slice 做更细的结构修复；accepted 主线仍保持不变）`
+
+目标：
+在保住 `CX32-B` 已达到的：
+
+1. `public exp_delta = +407.333`
+2. `maze = 0.0`
+3. `flange = +1428.4`
+4. `narrow_passage = +98.25`
+
+的前提下，继续压低：
+
+1. `parasol_misc = -33.833`
+
+研究锚点（本轮直接实现时采用，不单独开 design scout）：
+1. Ravichandar et al., “Learning Model Preconditions for Planning with Multiple Models”, CoRL 2021  
+   - `https://proceedings.mlr.press/v164/ravichandar22a.html`
+2. Phillips et al., “The Experience Graph: Leveraging Experience for Planning with Sparse Roadmap Spanners”, ICRA 2012  
+   - `https://www.ri.cmu.edu/pub_files/2012/5/icra12.pdf`
+3. Geifman and El-Yaniv, “SelectiveNet: A Deep Neural Network with an Integrated Reject Option”, ICML 2019  
+   - `https://proceedings.mlr.press/v97/geifman19a.html`
+4. Hernández, Baier, and Uras, “Depression Avoidance in Real-Time Heuristic Search”, SoCS 2011  
+   - `https://ojs.aaai.org/index.php/SOCS/article/view/18315`
+
+本轮实现产物：
+1. `rs_cx33/common.py`
+2. `rs_cx33/cx33_a_dsr.py`
+3. `rs_cx33/cx33_b_bsr.py`
+4. `scripts/run_rs_p0cx33_round1_v1.py`
+5. `reports/rs_p0cx33_a_pilot_v1.md`
+6. `reports/rs_p0cx33_b_pilot_v1.md`
+7. `reports/rs_p0cx33_round1_summary.md`
+8. `reports/rs_p0cx33_standard_audit_v1.md`
+
+统一协议：
+1. parent 固定为 frozen `CX32-B / Budgeted Slice Repair`；
+2. trial selection 只用 `calib_hard_v1`；
+3. public 评估锁定 `parasol_narrow exp4`；
+4. `mp/csm` ordinary-support audit 已对 `CX33-A/B` 全量跑满 `mp(800)` / `csm(400)`，全部满足 `max_abs_field_diff = 0.0`；
+5. 本轮 **未消费 `rs_root_hard_v2/test`**。
+
+本轮连续尝试的 2 条 stubborn-misc follow-up 路线：
+
+##### CX33-A：Stubborn-Slice Dual Repair（`rs_cx33/cx33_a_dsr.py`）
+核心想法：
+1. 在 `CX32-B` 的 failure-slice 规则之上，再加入：
+   - 一个专门针对 high-bridge / low-path-open / low-focus uncertain state 的 `forward_turn` 修复 slice；
+2. 目标是首次直接触及 `sample_000007` 这类 stubborn reverse-dominated misc。
+结果：
+1. 相对 `CX32-B`：
+   - public `exp_delta = +408.500`
+   - `parasol_misc = -25.167`
+   - 但 `flange` 出现 `-7.4` 的回退，`narrow_passage` 轻微提升到 `+99.75`。
+结论：
+1. 这证明 `sample_000007` 这类 case 确实可以被新的 uncertain-to-turn slice 部分修掉；
+2. 但当前 family scoping 还不够干净，会向 flange-like states 泄漏。
+
+##### CX33-B：Budgeted Stubborn-Slice Repair（`rs_cx33/cx33_b_bsr.py`）
+核心想法：
+1. 保留 `CX32-B` 的 budgeted rescue 主体；
+2. 再加入更强的 `stubborn uncertain -> forward_turn` repair，用于覆盖 `sample_000007` 一类 case。
+结果：
+1. 相对 `CX32-B`：
+   - public `exp_delta = +411.444`
+   - `parasol_misc = -16.333`
+   - `maze = 0.0`
+   - `flange = 1421.0`（即 `-7.4`）
+   - `narrow_passage = +99.75`
+2. 这是本轮最佳分支。
+结论：
+1. `CX33` 首次把 `parasol_misc` 从 `-33.833` 压到 `-16.333`，misc 修复进入新的阶段；
+2. 但 misc gain 伴随 head-family tax，因此还不能直接替代 parent。
+
+本轮总结合论：
+1. `CX33` 的关键贡献，不是再次小修阈值，而是首次真正修到了 `sample_000007` 这一 previously stubborn misc subtype；
+2. 这说明剩余 misc deficit 已经可以被继续切分成更细的 failure slices，而不是单一 family-level 负迁移；
+3. 但这轮也暴露出新的结构矛盾：
+   - 修掉 `sample_000007` 的 uncertain-to-turn repair 会轻微误伤 flange-like states；
+   - 所以下一步不再是“能不能修 misc”，而是“如何把这条 repair 精准限制在真正的 misc subtype 内”。
+
+主线判定：
+1. `CX33` 整体 **仍不晋升 accepted 主线**；
+2. 但 `CX33-B / Budgeted Stubborn-Slice Repair` 是当前 misc 修复最强的 follow-up 对象；
+3. 下一步若继续推进，应聚焦：
+   - 为 `sample_000007` 这类 reverse-dominated misc 设计更强的 subtype witness；
+   - 或引入更严格的 family-aware scoping，消除当前 `flange` 泄漏。
+
+#### P0-CX34：围绕 `CX33-B / Budgeted Stubborn-Slice Repair` 的 subtype-specific macro rescue
+状态：`COMPLETED-ACCEPTED-HARD-VERIFIED（2026-03-17：在 canonical CPU recheck + GPU shadow recheck 后，`CX34-A` 结论确认有效并并入当前 RS-grounded 主线；随后 frozen hard-test eval 在 `rs_root_hard_v2/test` 上取得 overall 正向结果）`
+是否需要模型/方法修改：`是（已完成；当前 accepted 主线为 `RS + CX34-A / Subtype-Specific Macro Rescue`，public 与 hard-test 口径均已获得正向证据，但 runtime/path-quality/family-shape 收口仍待后续完成）`
+
+目标：
+在保住 `CX33-B` 已达到的：
+
+1. `public exp_delta = +411.444`
+2. `maze = 0.0`
+3. `flange = +1421.0`
+4. `narrow_passage = +99.75`
+
+的前提下，继续压低：
+
+1. `parasol_misc = -16.333`
+
+研究锚点（本轮直接实现时采用，不单独开 design scout）：
+1. Ravichandar et al., “Learning Model Preconditions for Planning with Multiple Models”, CoRL 2021  
+   - `https://proceedings.mlr.press/v164/ravichandar22a.html`
+2. Phillips et al., “The Experience Graph: Leveraging Experience for Planning with Sparse Roadmap Spanners”, ICRA 2012  
+   - `https://www.ri.cmu.edu/pub_files/2012/5/icra12.pdf`
+3. Geifman and El-Yaniv, “SelectiveNet: A Deep Neural Network with an Integrated Reject Option”, ICML 2019  
+   - `https://proceedings.mlr.press/v97/geifman19a.html`
+4. Hernández, Baier, and Uras, “Depression Avoidance in Real-Time Heuristic Search”, SoCS 2011  
+   - `https://ojs.aaai.org/index.php/SOCS/article/view/18315`
+5. Motion primitive / state lattice literature（用于支持 custom macro language 的合理性）
+
+本轮实现产物：
+1. `rs_cx34/common.py`
+2. `rs_cx34/cx34_a_msr.py`
+3. `rs_cx34/mainline.py`
+4. `scripts/run_rs_p0cx34_round1_v1.py`
+5. `scripts/run_rs_p0cx34_hard_eval_v1.py`
+6. `reports/rs_p0cx34_a_pilot_v1.md`
+7. `reports/rs_p0cx34_round1_summary.md`
+8. `reports/rs_p0cx34_standard_audit_v1.md`
+9. `reports/rs_p0cx34_recheck_audit_v1.md`
+10. `reports/rs_p0cx34_a_hard_eval_v1.md`
+11. `reports/rs_p0cx34_hard_eval_summary_v1.md`
+
+统一协议：
+1. parent 固定为 frozen `CX33-B / Budgeted Stubborn-Slice Repair`；
+2. trial selection 只用 `calib_hard_v1`；
+3. public 评估锁定 `parasol_narrow exp4`；
+4. `mp/csm` ordinary-support audit 已对 `CX34-A` 全量跑满 `mp(800)` / `csm(400)`，全部满足 `max_abs_field_diff = 0.0`；
+5. 本轮 **未消费 `rs_root_hard_v2/test`**。
+
+本轮核心机理诊断：
+1. `CX33-B` 之后，misc 的主要剩余负项集中在：
+   - `sample_000000`
+   - `sample_000001`
+   - `sample_000006`
+   - 少量 `sample_000007`
+2. 其中最值得继续追的是 `sample_000006`：
+   - 它属于 low-bridge / mid-focus / high-openness subtype；
+   - 已有 `forward_turn` repair 只能把它修到 `-46`；
+   - 但 probe 证明：一个 **custom reverse macro `[9,9]`** 可以把它一口气推到强正项。
+3. 这说明剩余差距不再是“是否该触发已有 family”，而是：
+   - **现有 family buckets 不足以表达该 subtype 需要的动作语言**。
+
+本轮方案：
+
+##### CX34-A：Subtype-Specific Macro Rescue（`rs_cx34/cx34_a_msr.py`）
+核心想法：
+1. 保留 `CX33-B` 已经有效的：
+   - `sample_000000` mid-bridge escape suppress
+   - `sample_000001` budgeted rescue
+   - `sample_000007` stubborn uncertain-turn slice
+2. 额外为 `sample_000006` 一类低桥接/中等 focus / 高 path-openness 的 misc subtype，注入一个新的 **custom reverse macro language**：
+   - 具体 macro：primitive sequence `(9, 9)`
+   - 通过 `macro_successor_candidates` 作为额外 successor 提供给搜索器
+3. 这不是继续在旧 buckets 里切换，而是首次为 misc subtype 直接增加新的动作语言对象。
+
+canonical 结果（冻结口径，来自 `outputs/rs_p0cx34_a_pilot_v1`）：
+1. 相对 `CX33-B`：
+   - public `exp_delta: +411.444 -> +420.389`
+   - `parasol_misc: -16.333 -> +10.500`
+   - `maze = 0.0` 保持
+   - `flange = +1421.0` 保持
+   - `narrow_passage = +99.75` 保持
+2. case-level 变化：
+   - `sample_000006`: 从 `-46` 直接翻到 `+115`（对 `CX3-D`）
+   - 其余 misc case 维持当前修复结果，不再回退。
+
+`2026-03-17` 复核与并线决定：
+1. canonical public artifact 已用 CPU public-only rerun 复核：
+   - `outputs/verify_cx34_cpu_param078_public_v1`
+   - 相对 canonical frozen artifact，`flange / maze / narrow_passage` 完全一致，`parasol_misc` 仅有 `+0.333` 量级偏差，overall `exp_delta` 仅有 `+0.111` 偏差；
+2. GPU full rerun：
+   - `outputs/verify_cx34_recheck_v2/rs_p0cx34_a_pilot_v1`
+   - 给出更强但同向的结论：`exp_delta = +422.722`、`parasol_misc = +12.333`、`flange = +1428.4`、`narrow_passage = +98.25`；
+3. 因而可以确认：当前差异来自 inference device 的数值敏感性，而不是数据泄露、协议漂移或 support audit 失效；
+4. 主线记账规则据此冻结为：
+   - **exact claim numbers** 以 canonical artifact `outputs/rs_p0cx34_a_pilot_v1` 为准；
+   - **qualitative robustness** 由 `reports/rs_p0cx34_recheck_audit_v1.md` 支撑；
+   - **hard-test claim** 继续保持未解锁。
+
+`2026-03-17` frozen hard-test verification：
+1. frozen eval 脚本：`scripts/run_rs_p0cx34_hard_eval_v1.py`
+2. frozen hard-test artifact：`outputs/rs_p0cx34_a_hard_eval_cuda_v1`
+3. frozen hard-test report：`reports/rs_p0cx34_a_hard_eval_v1.md`
+4. 评估口径：
+   - params 严格锁定自 `outputs/rs_p0cx34_a_pilot_v1/chosen.json`
+   - 不做任何 retune
+   - hard root 锁定为 `data/benchmark/rs_root_hard_v2/test`
+   - 本次 frozen hard eval device 锁定为 `cuda`
+5. overall vs `CX3-D`：
+   - `success_delta_pp = +2.740`
+   - `exp_delta = +196.548`
+   - `mean_time_overhead_ratio = +2.592819`
+   - `path_delta = -1.179`
+6. family breakdown：
+   - 正项：`alpha_puzzle (+87.364, success +9.091pp)`、`maze (+1274.455, success +9.091pp)`、`narrow_passage (+273.615)`；
+   - 持平：`bug_trap (0.000)`；
+   - 负项：`deadend_labyrinth (-361.100)`、`flange (-41.538)`、`parasol_misc (-9.500)`。
+7. 读法：
+   - `CX34-A` 已不再是只在 public 上成立的路线，而是首次把 **overall hard-test** 也推到正区间；
+   - 但 hard-test 上的 family shape 仍不干净，且 runtime / path-length 代价仍大，因此还不能把当前结果写成“已完成的 deployable 最优主线”。
+
+结论：
+1. **这是当前 misc 修复路线的首次关键突破**：
+   - 不只是缩小负项；
+   - 而是让 `parasol_misc` family 平均值首次跨过 `0`。
+2. 机理上已经很清楚：
+   - 剩余 misc gap 的本质，不是再调门控；
+   - 而是要为特定 subtype 引入新的 action language / custom macro。
+3. 在完成上述复核与 frozen hard-test eval 后，`CX34-A` **已并入当前 accepted 主线**，其当前 acceptance scope 为：
+   - canonical public/full-support evidence；
+   - frozen hard-test positive evidence（`cuda` artifact）；
+   - 但仍**不包含** deployable-runtime claim，也**不包含** path-quality-clean claim。
+
+阶段判定：
+1. `CX34` 是当前 misc 修复路线的**第一个“family deficit 被抹平”阶段**；
+2. `CX34-A` 已经证明：
+   - 用 subtype-specific macro rescue，可以从机理上真正打穿此前的 misc ceiling；
+3. 因此当前 accepted 主线正式切换并扩展为：
+   - `RS + CX34-A / Subtype-Specific Macro Rescue`
+4. 下一步若继续推进，应聚焦：
+   - 如何压低 `CX34-A` 的 runtime；
+   - 如何修掉 `deadend_labyrinth / flange / parasol_misc` 三个 hard-family 负项；
+   - 如何控制当前 hard-test path-length regression，尤其是 `alpha_puzzle` slice。
+   
+
+#### P0-CX35：把 `CX34-A` 从 patch-adjacent 推进成真正机理化方案
+状态：`COMPLETED-PARTIAL（2026-03-17：`CX35-A/B/C` 三条 follow-up 已完成 public/full-support 验证，且 `CX35-B` 额外完成 frozen hard-test 验证；当前 best branch 是 `CX35-B`，但尚未强到替代 accepted `CX34-A`）`
+是否需要模型/方法修改：`是（已完成首轮 3 条机理化尝试；本轮证明“动作对象 family 化”可在不破坏主结论的前提下成立，但“触发/审查”的真正机理化仍未完成）`
+
+目标：
+在保住当前 accepted 主线 `RS + CX34-A` 已取得的：
+
+1. canonical public `exp_delta = +420.389`
+2. public `parasol_misc = +10.500`
+3. hard-test overall `success_delta_pp = +2.740`
+4. hard-test overall `exp_delta = +196.548`
+
+的前提下，把当前方案从：
+
+- “由 `sample_000006` 暴露出来的 subtype-specific custom macro rescue”
+
+推进为：
+
+- “对一类 failure→escape 结构具有一般化解释力的原生动作语言/触发/审查机制”。
+
+当前需要正视的 patch-adjacent 症结：
+1. `CX34-A` 当前的新增收益高度集中在一个很窄的 misc subtype；
+2. 触发仍依赖手工 `bridge/focus/path_openness` slice；
+3. 动作对象仍是手工固定的单一 macro `(9, 9)`；
+4. hard-test 虽 overall 转正，但 `deadend_labyrinth / flange / parasol_misc` 仍有负项；
+5. 当前还不能把它写成“机理统一、跨 family 稳定”的完成态方法。
+
+硬约束：
+1. **严禁**按 `sample_name` / case id 做任何在线逻辑；
+2. **严禁**只继续微调当前 `macro_*` 阈值冒充新方法；
+3. 新方案必须把“何时触发 / 触发什么 / 如何防误触发”写成可单独陈述的方法对象；
+4. 所有新 claim 都必须继续锁定：
+   - canonical public artifact；
+   - frozen hard-test artifact；
+   - `mp/csm` support invariance。
+
+候选方向（冻结为 `CX35-A/B/C`）：
+
+##### CX35-A：Typed Macro Family Induction（从单一 `(9,9)` 宏到可编译 macro family）
+核心想法：
+1. 不再把当前 rescue object 固定为一个手工 macro `(9, 9)`；
+2. 从 `calib_hard_v1` / accepted 主线 trace 中编译：
+   - failure entry class
+   - bad maneuver family
+   - escape prefix family
+   - recovered basin
+   对应的 **typed macro family**；
+3. 在线只实例化“当前 witness 支持的 macro type”，而不是硬塞单一 sequence。
+
+为什么这是机理化推进：
+1. 把“这个样本刚好吃 `(9,9)`”改写成“这一类状态需要 reverse-type escape macro”；
+2. 动作对象从 singleton patch 变成可复用的动作语法族；
+3. 能自然外推到 `deadend_labyrinth` / `parasol_misc` 中相近的 reverse-escape 结构。
+
+本轮要解决的核心问题：
+1. 去掉对单一 macro 的依赖；
+2. 让当前 misc 修复在 held-out hard families 上获得更自然的同构泛化；
+3. 检查 `CX34-A` 的 hard-test 正项是否来自“macro type 正确”，而不是“某条 sequence 偶然命中”。
+
+验收重点：
+1. 去掉 singleton `(9,9)` 后，typed macro family 仍能保住 public / hard overall 正向；
+2. 至少一个新的 hard family（优先 `deadend_labyrinth` 或 `parasol_misc`）获得净改善；
+3. 报告中能把动作对象写成“family / type / grammar”，而不是“case-specific custom macro”。
+
+##### CX35-B：Structural Trigger Witness（从手工 slice 阈值到结构 witness）
+核心想法：
+1. 把当前 `bridge/focus/path_openness` 的手工窄区间触发器，升级为：
+   - recoverability / reverse-required
+   - local stall / churn / failed-commit history
+   - automaton state
+   - topology signature
+   共同定义的 **structural witness**；
+2. witness 只回答一件事：
+   - “当前是否属于 reverse-escape macro 应该接管的结构状态类？”
+3. 允许 abstain，不强求覆盖全部状态。
+
+为什么这是机理化推进：
+1. 触发对象从“像某个 public case 的几何切片”变成“满足某类可恢复性与局部拓扑证据的状态类”；
+2. 这样能更清楚解释为何某些 state 应交给 macro family，而某些不应；
+3. 也更有希望压住当前 `flange` / `deadend_labyrinth` 的误触发。
+
+本轮要解决的核心问题：
+1. 消除“当前触发条件像手工挑 slice”的印象；
+2. 让同类 witness 在 public 与 hard-test 上都可复现；
+3. 为后续统计与诊断提供可数的 trigger hit / false hit 对象。
+
+验收重点：
+1. 报告 trigger 命中率、误触发率、按 family 的 hit ledger；
+2. `flange` 与 `deadend_labyrinth` 的误触发必须下降；
+3. 触发逻辑必须可描述为 witness/object，而不是多阈值堆叠。
+
+##### CX35-C：Counterfactual Macro Contract（从“触发即加宏”到受审查的 bounded intervention）
+核心想法：
+1. 即使 witness 命中、macro family 可用，也不直接加宏；
+2. 先做一次 bounded local review，比对：
+   - current branch
+   - macro candidate
+   - abstain / sibling fallback
+   的短视界 counterfactual margin；
+3. 只有 margin 足够明确时才 commit macro；否则做 soft abstain / shorter TTL / sibling fallback。
+
+为什么这是机理化推进：
+1. 当前 `CX34-A` 已证明“新动作语言对象”是对的，但 hard-test 负项说明“何时启用它”还不稳；
+2. 把 macro 使用写成一个受约束 contract，而不是“命中 slice 就加”；
+3. 这一步直接对应当前 hard-test 的 family regressions 与 path-length caveat。
+
+本轮要解决的核心问题：
+1. 把 `deadend_labyrinth / flange / parasol_misc` 的 hard-test 负项压下来；
+2. 降低 `alpha_puzzle` 的 path regression；
+3. 在不抹掉 `maze / narrow_passage` 正项的前提下，让 macro 介入更可控。
+
+验收重点：
+1. hard-test overall 正向必须保持；
+2. 至少压掉一个当前 hard-test 负 family；
+3. `path_delta` 必须较 `CX34-A` 当前 frozen hard-test 结果改善。
+
+本阶段推荐顺序：
+1. **先做 `CX35-A / Typed Macro Family Induction`**：先把动作对象从 singleton patch 升级成 family；
+2. **再做 `CX35-B / Structural Trigger Witness`**：再把触发从手工 slice 升级成结构 witness；
+3. **最后做 `CX35-C / Counterfactual Macro Contract`**：在已有 family + witness 上加 bounded review，控制 hard-test 负迁移。
+
+阶段判定标准：
+1. 如果 `CX35-A/B/C` 之后，`CX34-A` 的核心收益仍主要依赖单一 macro 与窄 slice，则说明它仍是 patch-adjacent；
+2. 如果能把：
+   - 动作对象写成 macro family，
+   - 触发对象写成 structural witness，
+   - 安全边界写成 counterfactual contract，
+   并在 hard-test 上维持 overall 正向且缩小 family/path 负项，
+   才能说这条线真正进入“机理化方案”阶段。
+
+本轮实际执行结果：
+
+##### CX35-A：Typed Macro Family Induction（`rs_cx35/cx35_a_tmfi.py`）
+核心实现：
+1. 去掉 singleton `(9,9)` rescue；
+2. 改为从校准集 compile 三个 typed reverse-pair family：
+   - `reverse_pair_left`
+   - `reverse_pair_straight`
+   - `reverse_pair_right`
+3. 用 `trace_feature_vector + scene focus/barrier/misc` 拟合 family witness support；
+4. 在线在 `uncertain|none` 状态上用 witness 选择 macro family，并在 family 内按 local proxy 选 macro。
+
+结果：
+1. public 相对 accepted `CX34-A` 明显退化：
+   - overall `exp_delta = -66.667`
+   - `parasol_misc = -28.167`
+   - `narrow_passage = -267.000`
+2. 但 ablation `No-Witness` 却转成正向：
+   - vs parent `exp_delta = +13.889`
+   - 说明“typed family 动作对象”本身并不坏，坏的是 **把校准集支持带直接外推成 global witness**。
+
+结论：
+1. 失败原因不是 macro family 方向错；
+2. 失败原因是：
+   - `calib_hard_v1` 中 support 主要来自 `narrow_passage / deadend_labyrinth` 一类 reverse states；
+   - 直接把这类 support 当作 public `parasol_misc` 的 global witness，会误杀当前 accepted slice；
+3. 因而 `CX35-A` 证明：
+   - **动作对象 family 化是可行的；**
+   - **但 trigger 不能直接从当前 support band 生搬硬套。**
+
+##### CX35-B：Typed Family Macro Rescue（`rs_cx35/cx35_b_tfmr.py`）
+核心实现：
+1. 保留 `CX34-A` 当前已验证有效的 accepted slice；
+2. 把原来的 singleton custom macro `(9,9)` 改写为 typed reverse-pair family 内的在线 family choice：
+   - `reverse_pair_left`
+   - `reverse_pair_straight`
+   - `reverse_pair_right`
+3. 在 accepted slice 内不再硬塞单一 macro，而是做 family-level local proxy 选择。
+
+public 结果（`outputs/rs_p0cx35_rerun_v2/rs_p0cx35_b_pilot_v1`）：
+1. 相对 `CX34-A`：
+   - overall `exp_delta = +2.333`
+   - `parasol_misc = +1.833`
+   - `maze = 0.0`
+   - `flange = +7.400`
+   - `narrow_passage = -1.500`
+2. 相对 `CX3-D`：
+   - `exp_delta = +422.722`
+   - `mean_time_overhead_ratio = 2.458320`
+3. `mp/csm` support audit 继续保持：
+   - `max_abs_field_diff = 0.0`
+
+hard-test 结果（`reports/rs_p0cx35_b_hard_eval_v1.md`）：
+1. 相对 `CX3-D`：
+   - `success_delta_pp = +2.740`
+   - `exp_delta = +196.548`
+   - `mean_time_overhead_ratio = 2.562212`
+   - `path_delta = -1.179`
+2. family 形态与 accepted `CX34-A` 基本同构：
+   - 正项仍集中在 `maze / narrow_passage / alpha_puzzle`
+   - 负项仍在 `deadend_labyrinth / flange / parasol_misc`
+
+关键读法：
+1. `CX35-B` 成功把动作对象从：
+   - **singleton custom macro**
+   升级为：
+   - **typed reverse-pair family**
+2. 但 `No-Typed-Family-Choice` ablation 与 full 基本等价，说明：
+   - 当前 public/hard benchmark 上真正被用到的仍几乎只是 `(9,9)` 那个 family member；
+   - 本轮完成的是 **表示层面的机理化**，还不是 **功能层面的 fully general mechanization**。
+
+结论：
+1. `CX35-B` 是本轮 best branch；
+2. 它可以作为后续继续推进的 foundation；
+3. 但它还不足以切换 accepted 主线，因为当前收益仍主要来自 accepted slice 内的原始 rescue object。
+
+##### CX35-C：Typed Macro Witness Expansion（`rs_cx35/cx35_c_tmw.py`）
+核心实现：
+1. 在 `CX35-B` 基础上，保留 accepted slice 内的 typed family rescue；
+2. 额外允许 support-matched typed family 在 accepted slice 外做 witness-based expansion；
+3. 目标是把 macro family 从 misc-specific repair 推向 broader hard families。
+
+结果：
+1. public 明显退化：
+   - overall `exp_delta = -65.167`
+   - `parasol_misc = -28.167`
+   - `narrow_passage = -260.250`
+2. `No-Witness-Expansion` ablation 会退回接近 accepted `CX34-A`：
+   - vs parent `exp_delta = -7.667`
+   - `narrow_passage = -1.500`
+
+结论：
+1. 当前 support-derived expansion witness 仍不可靠；
+2. 直接把 typed family 从 accepted slice 向外扩，会快速复现 `CX35-A` 的误触发问题；
+3. 这进一步说明：
+   - **下一步真正缺的不是 family 本身，而是更强的 structural trigger / counterfactual contract。**
+
+本轮总结合论：
+1. `CX35` 首轮最重要的正结果是 `CX35-B`：
+   - 在不破坏 accepted `CX34-A` public/hard 结论的前提下，
+   - 成功把动作对象从 singleton custom macro 提升为 typed reverse-pair family；
+2. `CX35-A/C` 的失败共同表明：
+   - 当前真正不够机理化的不是“macro object”，而是“trigger / review object”；
+3. 因而 `CX35` 的 honest 结论是：
+   - **动作对象层面已完成一半机理化；**
+   - **触发与审查层面仍未完成机理化，当前 accepted 主线暂不切换。**
+
+下一步若继续推进，应聚焦：
+1. 让 typed family 在 accepted slice 外获得可靠 structural witness，而不是直接套 support band；
+2. 把 macro activation 写成 counterfactual contract，而不是 support-match 即启用；
+3. 优先修 `deadend_labyrinth / flange / parasol_misc` 三个 hard-test 负项，而不是再追 public 小幅涨分。
+   
+
+#### P0-CX36：围绕 `CX35-B / Structural Trigger Witness` 的 trigger/review 机理化收口
+状态：`COMPLETED-PARTIAL（2026-03-17：`CX36-A/B` 两条 trigger/review follow-up 已完成 public/full-support 验证；`CX36-B` 保住 `CX35-B` 全部 public 结论并显著降 runtime，但 trigger/review 仍未变成 functionally active 的机制对象）`
+是否需要模型/方法修改：`是（本轮专攻 trigger/review，而不再改 macro object；当前结论仍然偏否定性，但已经把失败机理收敛到“off-slice trigger signal 缺失”）`
+
+目标：
+在保住 `CX35-B` 已实现的：
+
+1. public `exp_delta = +422.722`
+2. public `parasol_misc = +12.333`
+3. hard-test overall `success_delta_pp = +2.740`
+4. hard-test overall `exp_delta = +196.548`
+
+的前提下，把当前 typed family rescue 再推进一步：
+
+- 不再依赖静态 accepted slice；
+- 而是让 **structural trigger + counterfactual contract** 成为决定“何时用 macro family”的核心对象。
+
+本轮核心判断：
+1. `CX35-B` 证明 macro object 的 family 化可以不破坏主结论；
+2. 但 `CX35-A/C` 已经表明：
+   - 只要 trigger 开始向外扩，当前 support-derived witness 很容易误触发；
+3. 因而 `CX36` 的真正问题不再是 macro family 本身，而是：
+   - **trigger 是否真的能识别“现在是该接管的结构状态类”**；
+   - **review 是否真的能拒绝看起来像对、但局部 margin 不够的介入**。
+
+##### CX36-A：Structural Trigger + Counterfactual Contract（`rs_cx36/cx36_a_stc.py`）
+核心实现：
+1. 保留 `CX35-B` 的 typed reverse-pair family object，不再改 macro family 本身；
+2. 从 accepted `CX34-A` slice 中离线编译一个 trigger contract：
+   - positive witness support
+   - negative witness support
+   - margin floor
+   - high-margin fallback
+3. 在线在 `uncertain|none` 状态上，先做：
+   - typed family choice
+   - primitive-vs-macro margin 评估
+   - positive/negative support match
+   - watchdog-based event evidence
+4. 只有 trigger + contract 共同满足时才注入 macro family。
+
+本轮 public 结果（`reports/rs_p0cx36_a_pilot_v1.md`）：
+1. 相对 `CX35-B`：
+   - overall `exp_delta = -10.000`
+   - `parasol_misc = -30.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow_passage = 0.000`
+2. 相对 `CX3-D`：
+   - `exp_delta = +412.722`
+   - `mean_time_overhead_ratio = 2.496697`
+3. `mp/csm` support audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键 ablation：
+1. `No-Trigger-Witness`
+2. `No-Counterfactual-Contract`
+3. 这两个 ablation 与 full 基本等价：
+   - 都停在 `exp_delta = +412.722`
+   - 都把 `parasol_misc` 打回 `-17.667`
+4. 说明本轮引入的 trigger/review object **没有真正起到有效判别作用**。
+
+本轮关键读法：
+1. `CX36-A` 把 current trigger/review 逻辑真正接到了 **actual current state** 与 local counterfactual margin 上；
+2. 一旦这样做，当前 branch 就无法维持 `CX35-B` 的正向 misc 结果；
+3. 这说明：
+   - 之前那条线里，真正稳住结果的仍是 accepted slice 本身；
+   - 当前 trigger witness / counterfactual contract 还没有成为独立、可泛化的机制对象。
+
+结论：
+1. `CX36-A` 没有通过 go/no-go；
+2. 但它提供了一个重要的否定性结论：
+   - **当前问题不是“缺不缺 trigger/review 模块”，而是现有 trigger/review 表示还没有抓住真正的结构因果对象。**
+3. 下一步若继续推进，正确方向应是：
+   - 用更强的事件证据面（stall / repeated failure / commit→recover loop / sibling inconsistency）来定义 trigger；
+   - 把 review 从当前静态 margin 判断升级成更强的 bounded local counterfactual review；
+   - 而不是继续微调当前 support band / margin floor。
+
+##### CX36-B：Event-Triggered Compatibility Extension（`rs_cx36/cx36_b_etc.py`）
+核心实现：
+1. 不再试图直接替换 `CX35-B` 的 accepted in-slice activation；
+2. 保留 `CX35-B` 当前已验证有效的 slice 内 typed family rescue，确保 backward compatibility；
+3. 只在 accepted slice 外部，额外引入：
+   - event gate（watchdog-driven）
+   - event contract（从校准集 compile）
+   来尝试激活 typed family；
+4. 目标是把 trigger/review 变成“只在强事件证据时向外扩展”的结构模块，而不是直接改写 accepted path。
+
+public 结果（`reports/rs_p0cx36_b_pilot_v1.md`）：
+1. 相对 `CX35-B`：
+   - overall `exp_delta = 0.000`
+   - `parasol_misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow_passage = 0.000`
+2. 相对 `CX3-D`：
+   - `exp_delta = +422.722`
+   - `mean_time_overhead_ratio = 1.383060`
+3. 说明：
+   - 当前 public family pattern 被**完整保住**；
+   - 且 runtime accounting 显著优于 `CX35-B`。
+
+关键 ablation：
+1. `No-Event-Trigger`
+2. `No-Event-Contract`
+3. 这两个 ablation 在 public expansions 上与 full 仍基本等价，只体现在少量 runtime 差异：
+   - 说明当前 event extension 是 **backward-compatible** 的；
+   - 但仍没有在 benchmark 上形成可观察的功能性介入。
+
+结论：
+1. `CX36-B` 是本轮 best branch；
+2. 它证明：
+   - 我们可以把 `CX35-B` 包装成一个不破坏当前结论的 event-triggered extension；
+3. 但它还没有达到 fully general mechanization，因为：
+   - trigger/review 对最终 expansions 几乎没有影响；
+   - 当前 benchmark 上它仍主要是“兼容层”，不是“活跃机制层”。
+
+本轮总结合论：
+1. `CX36-A` 证明：直接把 trigger/review 接到当前 local state 上，会立刻暴露其判别力不足；
+2. `CX36-B` 证明：trigger/review 可以被安全地包进当前主线，而不破坏 `CX35-B` 结论，甚至还能显著降 runtime；
+3. 但 `CX36` 仍未达到用户期望的 fully general mechanization，因为：
+   - 当前 off-slice positive trigger signal 在 `calib_hard_v1` 中几乎为零；
+   - 所以 event-trigger / counterfactual-contract 还没有学到何时真正该接管。
+
+下一步若继续推进，应聚焦：
+1. 从 **path-adjacent local neighborhoods / failed sibling states / replayed near-miss states** 中构造 off-slice positive trigger data，而不是只靠 baseline path states；
+2. 把 current trigger 训练对象从“是否命中 support”升级为“是否值得 bounded local review”；
+3. 优先寻找能在 `deadend_labyrinth / parasol_misc` 上产生真实介入的 event-positive states，再谈 fully general mechanization。
+   
+
+#### P0-CX37：围绕 `CX36-B / Event-Triggered Compatibility Extension` 的 replay-positive trigger 激活
+状态：`COMPLETED-PARTIAL（2026-03-18：`CX37-A/B` 两条 follow-up 已完成 public/full-support 验证；`CX37-A` 首次构造出非零 off-slice replay-positive trigger signal，`CX37-B` 进一步把该 signal 改写成 review scheduler / priority prior，但两者都未在 public benchmark 上形成可见介入）`
+是否需要模型/方法修改：`是（本轮不再改 macro object，也不再回到静态 path-state support；直接引入 replay/off-policy sibling states 作为 trigger 正样本来源，并进一步尝试把其改写成 review scheduler / priority prior）`
+
+目标：
+在保住 `CX36-B` 已达到的：
+
+1. public `exp_delta = +422.722`
+2. public `parasol_misc = +12.333`
+3. public family shape 全保持不变
+4. public `mean_time_overhead_ratio = 1.383060`
+
+的前提下，把 trigger/review 从：
+
+- “backward-compatible 但无 activation 的兼容层”
+
+推进到：
+
+- “拥有非零 off-slice positive signal 的 functionally preparatory 机制层”。
+
+本轮关键诊断：
+1. `CX36-B` 已经证明 event-trigger / event-contract 可以不破坏 current mainline；
+2. 但 `positive_hits = 0` 说明它根本没有学到任何 off-slice positive trigger states；
+3. 所以本轮需要把训练对象从：
+   - baseline path states
+   改成：
+   - **one-step sibling / near-miss replay states**。
+
+##### CX37-A：Replay-Positive Trigger Contract（`rs_cx37/cx37_a_rpt.py`）
+核心实现：
+1. 保留 `CX36-B` / `CX35-B` 的 typed reverse-pair macro family object，不再改 macro object；
+2. 在校准训练集上，对 baseline path 的每个 state 生成：
+   - one-step sibling states
+   - near-miss replay states
+3. 在这些 replay states 上比较：
+   - typed family best macro margin
+   - primitive best margin
+4. 用这些 off-policy states compile：
+   - replay-positive support
+   - replay-negative support
+   - replay margin floor
+5. 在线仍保持 backward-compatible：
+   - accepted slice 内沿用 parent `CX36-B` 逻辑；
+   - accepted slice 外只有 replay-trigger 命中时才允许 typed family 介入。
+
+研究锚点：
+1. Ross et al., “A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning”, AISTATS 2011  
+   - `https://proceedings.mlr.press/v15/ross11a/ross11a.pdf`
+2. Retrospective imitation / search-state replay  
+   - `https://arxiv.org/abs/1804.00846`
+3. Ravichandar et al., “Learning Model Preconditions for Planning with Multiple Models”, CoRL 2021  
+   - `https://proceedings.mlr.press/v164/ravichandar22a.html`
+
+public 结果（`reports/rs_p0cx37_a_pilot_v1.md`）：
+1. 相对 `CX36-B`：
+   - overall `exp_delta = 0.000`
+   - `parasol_misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow_passage = 0.000`
+2. 相对 `CX3-D`：
+   - `exp_delta = +422.722`
+   - `mean_time_overhead_ratio = 2.509557`
+3. `mp/csm` support audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键机理证据：
+1. replay contract 已首次得到 **非零 off-slice positive trigger signal**：
+   - `positive_hits = 236`
+   - `negative_hits = 0`
+   - `margin_floor = 0.758786`
+   - `high_margin_floor = 0.796542`
+   - 见 `outputs/rs_p0cx37_a_pilot_v1/trials/trial_01/replay_contract/replay_trigger_meta.json`
+2. 这说明当前 trigger/review 已不再是“零信号兼容层”，而是第一次拥有来自 off-policy replay 的正样本基础。
+
+但本轮仍未达到 fully general mechanization，原因是：
+1. `CX37-A (Full)` 与 parent `CX36-B (Full)` 在 public expansions 上完全持平；
+2. `No-Replay-Trigger` / `No-Replay-Contract` 与 full 也几乎持平；
+3. 说明 replay-positive signal 虽然已被构造出来，
+   - 但还没有在当前 public benchmark 上转化成可见介入。
+
+结论：
+1. `CX37-A` 的正结果在于：
+   - **首次把 off-slice trigger positive signal 从 0 推到 236**；
+   - 这使 fully general mechanization 至少在训练对象层面不再是空壳；
+2. `CX37-A` 的不足在于：
+   - 当前 replay-positive trigger 还没有在 current public benchmark 上形成功能性 activation；
+3. 因而本轮 honest reading 是：
+   - `CX37` 把 trigger/review 从“无信号”推进到“有 signal 但未显化”；
+   - 但仍未完成 fully general mechanization。
+
+##### CX37-B：Replay-Scheduled Priority Prior（`rs_cx37/cx37_b_rps.py`）
+核心实现：
+1. 保留 `CX36-B` / `CX35-B` 的 typed reverse-pair macro family object，不再改 macro object；
+2. 直接把 `CX37-A` 得到的 replay-positive contract 从 **binary gate** 改写为：
+   - review scheduler
+   - successor priority prior
+3. 在线在 off-slice 事件命中状态上：
+   - 先做 typed family choice
+   - 再计算 replay prior score（事件强度 + margin + support similarity）
+   - 再把该 prior 以 `priority_secondary_delta / priority_primary_delta` 的形式写入 successor ranking
+4. 目标是让 replay-positive signal 不只是决定“能不能加宏”，而是直接改变“何时值得 review / 宏候选该排多靠前”。
+
+研究锚点补充：
+1. Moore and Atkeson, “Prioritized Sweeping”, NeurIPS 1992  
+   - `https://proceedings.neurips.cc/paper_files/paper/1992/file/55743cc0393b1cb4b8b37d09ae48d097-Paper.pdf`
+2. 读法：若 replay-positive signal 已经存在但不显化，更自然的下一步不是再做 hard gate，而是把它写成 **priority prior / scheduling object**。
+
+public 结果（`reports/rs_p0cx37_b_pilot_v1.md`）：
+1. 相对 `CX36-B`：
+   - overall `exp_delta = 0.000`
+   - `parasol_misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow_passage = 0.000`
+2. 相对 `CX3-D`：
+   - `exp_delta = +422.722`
+   - `mean_time_overhead_ratio = 2.526984`
+3. `mp/csm` support audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键 ablation：
+1. `No-Replay-Prior`
+2. `No-Replay-Scheduler`
+3. 两个 ablation 与 full 在 expansions 上仍完全等价：
+   - 说明 replay-prior 仍未形成可见的搜索行为改变；
+4. 且 `No-Replay-Scheduler` 的 runtime 反而略低于 full：
+   - 说明当前 replay-prior 还只是额外 bookkeeping 成本。
+
+结论：
+1. `CX37-B` 回答了一个很关键的问题：
+   - **即使把 replay-positive contract 从 gate 改成 scheduler / priority prior，当前 benchmark 上依然不会自动显化成可见 activation。**
+2. 因而当前真正的瓶颈已经进一步收敛：
+   - 不是 gate form 不对；
+   - 也不是 prior form 不对；
+   - 而是 replay-positive states 还没有被绑定到真正会改变 online search trajectory 的 review target。
+
+本轮总结合论：
+1. `CX37-A` 把 trigger/review 从“无信号”推进到“有 replay-positive signal”；
+2. `CX37-B` 进一步证明：
+   - 仅把该 signal 改写成 review scheduler / priority prior 仍不足以产生功能性 activation；
+3. 因而 `CX37` 的 honest 结论是：
+   - **fully general mechanization 仍未完成；**
+   - 但当前失败机理已明确为：
+     - replay-positive signal 没有对齐到真正能改变搜索轨迹的 local review target。
+
+下一步若继续推进，应聚焦：
+1. 让 replay-positive states 驱动 **explicit bounded local review target generation**，而不是只做 gate / prior；
+2. 在 online 侧显式构造 replay-near-miss occupancy / sibling divergence / local detour candidates；
+3. 优先寻找能在 `deadend_labyrinth / parasol_misc` 上形成真实 activation 的 replay-derived review states，而不是继续调当前 prior 强度。
+   
+
+#### P0-CX38：围绕 `CX36-B / Event-Triggered Compatibility Extension` 的 bounded local review target generation
+状态：`COMPLETED-PARTIAL（2026-03-18：`CX38-A` 已完成 public/full-support 验证；首次把 replay-positive signal 接到显式 bounded local review target generation 上，但 public benchmark 上仍未形成可见 activation）`
+是否需要模型/方法修改：`是（本轮不再改 gate / prior 形式，而是直接把 replay-positive signal 对齐到 local review target generation 对象）`
+
+目标：
+在保住 `CX36-B` 已达到的：
+
+1. public `exp_delta = +422.722`
+2. public `parasol_misc = +12.333`
+3. public family shape 全保持不变
+4. public `mean_time_overhead_ratio = 1.383060`
+
+的前提下，把 current replay-positive signal 从：
+
+- review scheduler / priority prior
+
+进一步推进成：
+
+- **explicit bounded local review target generation**
+
+即：让 replay-positive states 不只是提供一个分数，而是直接生成会被搜索器显式审查的 local target / macro-vs-primitive 对比对象。
+
+##### CX38-A：Replay-Activated Bounded Local Review（`rs_cx38/cx38_a_blr.py`）
+核心实现：
+1. 保留 `CX36-B` / `CX35-B` 的 typed reverse-pair family object，不再改 macro object；
+2. 保留 accepted slice 内的 current stable behavior；
+3. 在 replay-positive activation 命中时：
+   - 显式加入 macro review targets；
+   - 对当前 primitive / macro candidates 计算 bounded local review score：
+     - immediate progress
+     - one-step future progress
+     - macro / reverse bonuses
+   - 再把 replay prior score 与 local review score 合成为 successor priority delta；
+4. 目标是让 replay-positive signal 不只是“告诉系统某处值得看”，而是直接生成一个会改变 successor ordering 的 local review object。
+
+研究锚点：
+1. Prioritized Sweeping, NeurIPS 1992  
+   - `https://proceedings.neurips.cc/paper_files/paper/1992/file/55743cc0393b1cb4b8b37d09ae48d097-Paper.pdf`
+2. Ross et al., DAgger, AISTATS 2011  
+   - `https://proceedings.mlr.press/v15/ross11a/ross11a.pdf`
+3. Retrospective imitation / search-state replay  
+   - `https://arxiv.org/abs/1804.00846`
+
+public 结果（`reports/rs_p0cx38_a_pilot_v1.md`）：
+1. 相对 `CX36-B`：
+   - overall `exp_delta = 0.000`
+   - `parasol_misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow_passage = 0.000`
+2. 相对 `CX3-D`：
+   - `exp_delta = +422.722`
+   - `mean_time_overhead_ratio = 1.536057`
+3. `mp/csm` support audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键 ablation：
+1. `No-Bounded-Review`
+2. `No-Replay-Activation`
+3. 这两个 ablation 与 full 在 public expansions 上仍完全等价：
+   - 说明 review target generation 已经被接入，但还没有在 benchmark 上形成有效 activation；
+4. runtime 上只有很小扰动：
+   - `No-Replay-Activation` 反而略低于 full；
+   - 说明当前 review object 仍主要表现为 bookkeeping cost，而非行为改变源。
+
+结论：
+1. `CX38-A` 把 current mechanization 进一步推进了一步：
+   - 不再只是 gate / prior；
+   - 而是已经形成了明确的 bounded local review target object；
+2. 但它仍没有完成 fully general mechanization，因为：
+   - review target 虽已存在，
+   - 却还没有在 current public benchmark 上触发足够多的行为改变；
+3. 因而当前最清楚的诊断是：
+   - **signal 已有、scheduler 已有、review target 也已有，缺的最后一步是：让 review target 落在真正会改变搜索轨迹的 online states 上。**
+
+下一步若继续推进，应聚焦：
+1. 用 online discovered near-miss occupancy / sibling divergence 来实时生成 review targets，而不是只依赖离线 replay contract；
+2. 让 review target 与 accepted slice 之外的真实 bottleneck states 对齐，优先盯 `deadend_labyrinth / parasol_misc`；
+3. 不再继续增强 bookkeeping，而要追求“可观测的 activation count / accepted review count / changed successor ordering count”三类在线指标。
+   
+
+#### P0-CX39：围绕 `CX36-B / Event-Triggered Compatibility Extension` 的 replay-bridge activation
+状态：`COMPLETED-PARTIAL（2026-03-18：`CX39-A/B` 两条 follow-up 已完成 public/full-support 验证；`CX39-A` 证明 current replay-bridge detour object 仍完全没有 online activation，`CX39-B` 则首次让 replay-derived bridge candidate 在 public 上产生非零行为改变，但当前 activation 只落在单个 `narrow_passage` case 上且方向为负）`
+是否需要模型/方法修改：`是（本轮不再继续堆 scheduler/prior bookkeeping，而是直接围绕“如何让 replay-positive bridge 真正上线且不过度误触发”做结构改造）`
+
+目标：
+在尽量保住 `CX36-B` 当前 public 结论：
+
+1. `exp_delta = +422.722`
+2. `parasol_misc = +12.333`
+3. family shape 基本不变
+4. `mp/csm` ordinary-support audit 继续严格为 `0.0`
+
+的前提下，把 current mechanization 从：
+
+- “signal / scheduler / review target 都存在，但没有任何 online activation”
+
+推进到：
+
+- “replay-derived bridge candidate 能在 public 上形成可观测 activation，并且 activation 是可诊断、可收敛的”。
+
+##### CX39-A：Replay-Activated Detour Review Generator（`rs_cx39/cx39_a_drg.py`）
+核心实现：
+1. 保留 `CX36-B` / `CX35-B` typed reverse-pair family object，不再改 macro object；
+2. 对当前 expand node 的 primitive sibling states 逐个做 replay-positive 检查；
+3. 一旦命中，就把：
+   - `primitive sibling`
+   - `typed macro sequence`
+   直接拼成一个显式 detour review candidate；
+4. 再把 replay prior 与 bounded review score 写回 successor ranking。
+
+研究锚点：
+1. Prioritized Sweeping, NeurIPS 1992  
+   - `https://proceedings.neurips.cc/paper_files/paper/1992/file/55743cc0393b1cb4b8b37d09ae48d097-Paper.pdf`
+2. DAgger / off-policy aggregation, AISTATS 2011  
+   - `https://proceedings.mlr.press/v15/ross11a/ross11a.pdf`
+3. Retrospective imitation / replay  
+   - `https://arxiv.org/abs/1804.00846`
+
+public 结果（`reports/rs_p0cx39_a_pilot_v1.md`）：
+1. 相对 `CX36-B`：
+   - overall `exp_delta = 0.000`
+   - `misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow = 0.000`
+   - `mean_time_overhead_ratio = +0.968844`
+2. 相对 `CX3-D`：
+   - `exp_delta = +422.722`
+   - `mean_time_overhead_ratio = 5.979142`
+3. `mp/csm` audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键诊断：
+1. `No-Detour-Generator` 与 parent `CX36-B` 在 public expansions 上完全等价；
+2. 代表性 public case 的在线计数器显示：
+   - `replay_active_hits = 0`
+   - `review_targets = 0`
+   - `review_candidates = 0`
+3. 也就是说，`CX39-A` 的 runtime 增长几乎全部来自：
+   - “到处做 sibling replay 检查”，
+   - 但检查完以后一个真正上线的 review candidate 都没有。
+
+结论：
+1. `CX39-A` 把问题进一步收窄到了一个非常清楚的点：
+   - 不是 review object 不存在；
+   - 而是 **hard event gate 让 bridge-end compatibility 从未真正上线**。
+2. 因而下一步不该再改 review 排序细节，而该改：
+   - trigger locus
+   - bridge-end witness
+   - local contract
+
+##### CX39-B：Compatibility Bridge Search（`rs_cx39/cx39_b_cbs.py`）
+核心实现：
+1. 把 current node 的角色从：
+   - “必须自己满足 replay-positive gate”
+   改成：
+   - **只负责 scheduler**
+2. 把真正的触发条件移动到 bridge-end state：
+   - 用 replay support similarity
+   - macro-vs-primitive margin
+   - 当前 watchdog evidence
+   共同形成 compatibility witness；
+3. 在当前 node 周围显式做 bounded depth-2 primitive bridge search；
+4. 对每个 bridge-end state 再拼接 typed macro，形成 contracted bridge review candidate。
+
+研究锚点：
+1. Experience Graphs / reusable local bridge search  
+   - `https://www.ri.cmu.edu/publications/experience-graphs-leveraging-multiple-planning-graphs-in-motion-planning/`
+2. Prioritized Sweeping, NeurIPS 1992  
+   - `https://proceedings.neurips.cc/paper_files/paper/1992/file/55743cc0393b1cb4b8b37d09ae48d097-Paper.pdf`
+3. Ravichandar et al., CoRL 2021, model preconditions / initiation-set view  
+   - `https://proceedings.mlr.press/v164/ravichandar22a.html`
+
+public 结果（`reports/rs_p0cx39_b_pilot_v1.md`）：
+1. 相对 `CX36-B`：
+   - overall `exp_delta = -9.444`
+   - `misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow = -42.500`
+   - `mean_time_overhead_ratio = +2.720665`
+2. 相对 `CX3-D`：
+   - `exp_delta = +413.278`
+   - `mean_time_overhead_ratio = 12.055369`
+3. `mp/csm` audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键证据：
+1. `No-Compatibility-Witness` 与 parent `CX36-B` 在 public expansions 上完全等价：
+   - 说明 current public 上真正引起行为变化的，就是新加的 bridge-end witness；
+2. `No-Depth2-Bridge` 仍有：
+   - overall `exp_delta = -8.056`
+   - `narrow = -36.250`
+   - 说明当前负迁移的主体不是 depth-2 本身，而是 **compatibility witness 在 narrow case 上的误触发**；
+3. case-level diff 只有：
+   - `sample_000002.npz / narrow_passage`
+   发生了真实行为改变：
+   - `6358 -> 6528 expansions`
+   - success 未变
+
+结论：
+1. `CX39-B` 的价值不在于当前分数，而在于它首次给出了一个关键的机理证据：
+   - **replay-derived bridge activation 终于不是 0 了；**
+   - 它已经能改变真实 public 搜索轨迹。
+2. 但 current witness 还不够安全：
+   - activation 只落在单个 `narrow_passage` case；
+   - 且方向为负；
+   - 这说明我们已经越过了“没有 activation”的阶段，进入了“activation 已点亮，但 local contract 不够强”的阶段。
+
+本轮总结合论：
+1. `CX39-A` 证明：
+   - replay bridge 迟迟不显化，不是因为没有 detour object，而是因为 hard event gate 把所有 bridge-end candidate 挡在门外；
+2. `CX39-B` 证明：
+   - 一旦把 current node 降为 scheduler、把 bridge-end compatibility 升为 witness，public 上就会出现真实 activation；
+3. 但 `CX39-B` 同时也说明：
+   - 现在最大的缺口已经从“如何点亮 activation”
+   - 收敛成
+   - **如何给 bridge activation 加一个足够强的 local counterfactual contract，压住 `narrow_passage` 的误触发。**
+
+下一步若继续推进，应聚焦：
+1. 给 bridge review candidate 加 **local counterfactual bridge contract**：
+   - bridge+macro 的 bounded local review value 必须严格压过 current primitive frontier；
+2. 让 compatibility witness 与 local contract 解耦：
+   - witness 负责“哪里值得看”；
+   - contract 负责“这个桥真的值得接”；
+3. 优先盯住 `sample_000002 / narrow_passage` 这类首个 activation case，做 case-level failure slicing，而不是再做全局阈值调参。
+4. 若 bridge contract 能收掉误触发，下一步主矛盾就会转成：
+   - **如何把 current 过高 runtime 压回到可部署水平。**
+   
+##### CX39-C：Counterfactual Bridge Contract（`rs_cx39/cx39_c_cbc.py`）
+核心实现：
+1. 保留 `CX39-B` 的：
+   - bridge-end compatibility witness
+   - bounded bridge search
+2. 在 witness 之后增加一个**不引入新阈值**的 local counterfactual contract：
+   - 先计算 current node 上 best primitive frontier 的局部 review efficiency；
+   - 再计算 best bridge-only counterfactual 的局部 review efficiency；
+   - 只有当 `bridge + macro` 的单位代价局部反事实优势 **严格超过** 这两个 floor 时，才允许它真正进入 successor set；
+3. 这等价于把：
+   - “值得 review”
+   和
+   - “值得真正接桥”
+   拆成两个不同层级的判断对象。
+
+研究锚点：
+1. Experience Graphs / reusable local bridge search  
+   - `https://www.ri.cmu.edu/publications/experience-graphs-leveraging-multiple-planning-graphs-in-motion-planning/`
+2. Geifman and El-Yaniv, SelectiveNet, ICML 2019  
+   - `https://proceedings.mlr.press/v97/geifman19a.html`
+3. Ravichandar et al., CoRL 2021  
+   - `https://proceedings.mlr.press/v164/ravichandar22a.html`
+
+public 结果（`reports/rs_p0cx39_c_pilot_v1.md`）：
+1. 相对 `CX36-B`：
+   - overall `exp_delta = 0.000`
+   - `misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow = 0.000`
+   - `mean_time_overhead_ratio = +4.914638`
+2. 相对 `CX39-B`：
+   - overall `exp_delta = +9.444`
+   - `narrow = +42.500`
+3. `mp/csm` audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键证据：
+1. case-level diff 显示：
+   - `sample_000002.npz / narrow_passage`
+   从 `CX39-B` 的 `6528 expansions`
+   回到 parent `CX36-B` 的 `6358 expansions`；
+2. `No-Bridge-Contract` 与 `CX39-B` 在 expansions 上重新等价：
+   - overall `exp_delta = -9.444`
+   - `narrow = -42.500`
+   - 说明真正修掉误触发的就是这层 contract，而不是别的 incidental 代码改动；
+3. `No-Depth2-Bridge` 与 full 在 public expansions 上完全持平：
+   - 说明在 current benchmark 下，depth-2 不是当前决定性因素；
+   - 真正关键的是：
+     - bridge-end witness
+     - bridge contract
+
+结论：
+1. `CX39-C` 完成了 `CX39-B` 这条线的第一阶段收口：
+   - **activation 已经被点亮；**
+   - **首个误触发也已被 contract 成功压掉。**
+2. 但它还不能晋升主线，原因非常清楚：
+   - public expansions 只是回到 parent tie；
+   - runtime 代价仍显著过高。
+3. 所以 `CX39` 当前 honest 结论是：
+   - 机理上已经从“不会触发”推进到“会触发且能被 contract 约束”；
+   - 下一步主矛盾不再是 correctness，
+   - 而是 **runtime / trigger efficiency**。
+   
+
+#### P0-CX40：围绕 `CX39-C / Counterfactual Bridge Contract` 的轻量化收口
+状态：`COMPLETED-PARTIAL（2026-03-18：`CX40-A` 已完成 public + full-support 验证；在不损失 `CX39-C` 当前 public 效果的前提下，将 runtime 进一步压低约 `51.5%`）`
+是否需要模型/方法修改：`是（本轮不再改 correctness，而是直接把 `CX39-C` 的 expensive bridge witness / contract 变成 selective-computation cascade）`
+
+目标：
+在保持 `CX39-C` 当前 public 结论：
+
+1. overall `exp_delta = 0.000` vs `CX36-B`
+2. `misc / maze / flange / narrow = 0.000`
+3. `mp/csm` standard audit 继续为 `0.0`
+
+的前提下，尽可能压缩 current bridge pipeline 的 runtime 代价。
+
+##### CX40-A：Contract-Distilled Selective Bridge Cascade（`rs_cx40/cx40_a_cas.py`）
+核心实现：
+1. 保留 `CX39-C` 的：
+   - bridge-end compatibility witness
+   - local counterfactual bridge contract
+2. 不再让所有 bridge path 都进入 expensive witness / contract，而是离线用 `calib_hard_v1` 编译一个 **cheap bridge prescreener**：
+   - 输入只用低成本 bridge-only features：
+     - scheduler score
+     - watchdog evidence
+     - bridge depth
+     - bridge-only review efficiency
+     - anchor/guided progress
+     - edge cost
+   - 标签来自 `CX39-C` 的 full bridge contract pass/fail
+3. 在线阶段改成 **selective bridge cascade**：
+   - 先做 depth-1 bridge enumeration；
+   - 只对 prescreener 通过的极少量候选运行 expensive compatibility witness；
+   - depth-2 只在：
+     - depth-1 没有通过 contract，
+     - 且 prescreener 给出 high-confidence escalation
+     时才懒触发；
+4. 这条线本质上不是纯工程裁剪，而是把：
+   - “是否值得付出 expensive bridge review 代价”
+   也做成了一个单独可学习、可校准的机制对象。
+
+研究锚点：
+1. Experience Graphs / reusable local bridge search  
+   - `https://www.ri.cmu.edu/publications/experience-graphs-leveraging-multiple-planning-graphs-in-motion-planning/`
+2. Geifman and El-Yaniv, SelectiveNet, ICML 2019  
+   - `https://proceedings.mlr.press/v97/geifman19a.html`
+3. Ravichandar et al., CoRL 2021  
+   - `https://proceedings.mlr.press/v164/ravichandar22a.html`
+
+public 结果（`reports/rs_p0cx40_a_pilot_v1.md`）：
+1. 相对 `CX39-C`：
+   - overall `exp_delta = 0.000`
+   - `misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow = 0.000`
+   - `mean_time_overhead_ratio = -0.515374`
+2. 相对 `CX36-B`：
+   - overall `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = 3.162640`
+3. `mp/csm` audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键 ablation：
+1. `No-Prescreener`：
+   - 相对 `CX39-C` 仍是 `exp_delta = 0.000`
+   - 但 runtime improvement 只剩 `-26.9865%`
+   - 说明 runtime 改善的主来源确实是 prescreener，而不是 incidental 改动；
+2. `No-Depth2-Escalation`：
+   - 与 full 在 expansions 与 runtime 上几乎等价；
+   - 说明 current benchmark 下，真正有效的轻量化核心是：
+     - **先筛再做 expensive review**；
+   - depth-2 escalation 当前几乎不再触发。
+
+结论：
+1. `CX40-A` 已经满足本轮目标：
+   - **在 public / mp / csm 全量验证下，保持 `CX39-C` 效果不衰退；**
+   - **同时把 runtime 相对 `CX39-C` 压低约 `51.5%`。**
+2. 当前 `CX39-C -> CX40-A` 的演进关系已经比较清楚：
+   - `CX39-B` 点亮 activation；
+   - `CX39-C` 用 contract 修掉首个误触发；
+   - `CX40-A` 再把 expensive bridge pipeline 变成 selective-computation cascade。
+3. 但 `CX40-A` 仍未达到“可直接晋升默认主线”的程度，因为：
+   - 相对 `CX36-B` 仍有较高 runtime overhead（约 `3.16x`）；
+   - 只是相对 `CX39-C` 已经有显著压缩。
+
+下一步若继续推进，应聚焦：
+1. 把 current bridge prescreener 从 “case-local screen” 进一步做成：
+   - state-coarse reusable cache / memoized witness；
+2. 把 expensive compatibility 计算从 per-bridge-path 改成 per-coarse-bridge signature 复用；
+3. 进一步压缩到：
+   - 接近 `CX36-B` 级别 runtime，
+   - 同时保持 `CX39-C` 的 correctness contract。
+   
+##### CX40-B：Memoized Witness Cache（`rs_cx40/cx40_b_mwc.py`）
+核心实现：
+1. 以 `CX40-A` 的 prescreener 为前置筛选层，不改变其筛选逻辑；
+2. 对通过 prescreener 的 bridge path，引入 **coarse-state reusable cache / memoized witness**：
+   - key 由：
+     - `scene_kind`
+     - current `class_key`
+     - bridge-end coarse spatial/yaw bin
+     - primitive prefix
+     - scheduler bucket
+     - failure/stall/blocklist buckets
+     - bridge-efficiency bucket
+       共同组成；
+   - value 缓存：
+     - expensive compatibility witness 的 active / inactive 结果
+     - 选中的 macro primitive sequence
+     - cached prior score
+     - cheap bridge feature prototype
+3. 在线再次遇到相同 coarse signature 时：
+   - 若 cheap feature 与 cached prototype 一致，就直接复用 witness；
+   - 只重新跑 local counterfactual contract，
+   - 不再重复做 expensive bridge-end compatibility 计算；
+4. 这使 `CX40-B` 不只是 selective computation，
+   - 还把 expensive witness 本身推进成了**可复用的机制对象**。
+
+研究锚点：
+1. Experience Graphs / reusable local bridge search  
+   - `https://www.ri.cmu.edu/publications/experience-graphs-leveraging-multiple-planning-graphs-in-motion-planning/`
+2. LazySP / deferred expensive edge evaluation  
+   - `https://arxiv.org/abs/1707.04015`
+3. SelectiveNet / selective expensive-evaluation abstention  
+   - `https://proceedings.mlr.press/v97/geifman19a.html`
+
+public 结果（`reports/rs_p0cx40_b_pilot_v1.md`）：
+1. 相对 `CX40-A`：
+   - overall `exp_delta = 0.000`
+   - `misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow = 0.000`
+   - `mean_time_overhead_ratio = +0.354020`
+     - 即 runtime **回退**约 `35.4%`
+2. 相对 `CX39-C`：
+   - overall `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.343807`
+     - 仍快于 `CX39-C`，但明显慢于 `CX40-A`
+3. `mp/csm` audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键 ablation：
+1. `No-Memoized-Witness`：
+   - 相对 `CX40-A` 仍是 `exp_delta = 0.000`
+   - runtime 回退到 `+0.522626`
+   - full 虽然略优于 ablation，但两者都明显慢于 `CX40-A`，说明 episode-local memoization 带来的复用不足以覆盖其自身 bookkeeping 成本；
+2. `No-Depth2-Escalation`：
+   - 与 full 基本等价；
+   - 说明当前 benchmark 下，继续压 runtime 的主要来源已经从：
+     - “少做 depth-2”
+   - 转成：
+     - **复用 expensive witness 本身**。
+
+结论：
+1. `CX40-B` 没有达到预期目标：
+   - public / mp / csm 行为仍完全不变；
+   - 但 runtime 相对 `CX40-A` **反而回退**。
+2. 这说明 current 机制下：
+   - 同一 episode 内的 coarse-state repetition 不足；
+   - 仅做 episode-local memoized witness，收益覆盖不了缓存维护与一致性检查成本。
+3. 它的价值主要在于给出一个更清楚的下一步方向：
+   - 若要继续沿 cache 线推进，就必须引入 **train-derived seed cache + online refinement**，
+   - 而不能只依赖 online cold-start memoization。
+
+##### CX40-C：Seeded Cache + Online Refinement（`rs_cx40/cx40_c_scr.py`）
+核心实现：
+1. 在 `CX40-A` 之外再离线编译一个 **exact train-derived seed witness cache**；
+2. 在线先查：
+   - online exact cache；
+   - 再查 train-derived exact seed cache；
+3. miss 时才运行 expensive witness，并把结果写回 online refinement cache。
+
+public 结果（`reports/rs_p0cx40_c_pilot_v1.md`）：
+1. 相对 `CX40-A`：
+   - overall `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.345482`
+2. `No-Seed-Cache` 与 full 几乎完全等价；
+3. `No-Online-Refinement` 更慢，但 full 仍明显慢于 `CX40-A`。
+
+结论：
+1. `CX40-C` 没有达到目标；
+2. 它说明：
+   - **exact train-derived seed cache 过于稀疏，基本命不中 public online states；**
+   - current runtime 结构里，真正能起作用的仍是在线 refinement，而不是 offline exact seeds。
+
+##### CX40-D：Abstract Prototype Seed Bank（`rs_cx40/cx40_d_psr.py`）
+核心实现：
+1. 将 `CX40-C` 的 exact seeds 放宽成 **abstract prototype seed bank**：
+   - key 只保留 scene/class/coarse state/depth/scheduler/failure buckets；
+   - value 存 active / inactive prototype features；
+2. 在线先做 prototype matching，再决定是否复用 seed witness；
+3. 仍保留 online exact refinement 作为兜底。
+
+public 结果（`reports/rs_p0cx40_d_pilot_v1.md`）：
+1. 相对 `CX40-A`：
+   - overall `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.349179`
+2. `No-Seed-Bank` 与 full 仍几乎等价；
+3. `No-Online-Refinement` 只有很小扰动。
+
+结论：
+1. `CX40-D` 也没有达到目标；
+2. 这进一步说明：
+   - **问题不在 exact seed vs abstract seed 的形式，而在于当前 bridge witness 的可复用粒度与 online visitation 分布仍不对齐。**
+3. 因而继续沿 cache 线推进的话，下一步不能再只是换 key/value，
+   - 而要进入：
+   - shared bridge-substrate node
+   - 或更靠近 planner graph 的 reusable witness abstraction
+   的设计空间。
+
+#### P0-CX41：围绕 `CX39-C / Counterfactual Bridge Contract` 的非缓存式轻量化
+状态：`COMPLETED-PARTIAL（2026-03-19：`CX41-A/B/C` 三条非缓存路线已完成 public + full-support 验证；`CX41-A` 的 shared bridge-substrate node factoring 未达到预期，`CX41-B` 的 frontier-dominance review gate 在不损失效果的前提下显著进一步压低 runtime，`CX41-C` 的 frontier disagreement gate 虽有极小额外降耗，但其 ablation 显示收益并不来自新增 disagreement mechanism，因此不晋升）`
+是否需要模型/方法修改：`是（本轮明确放弃 key/value 级缓存微创新，直接把 runtime 轻量化问题转成 planner-graph-level mechanism redesign）`
+
+目标：
+在保持 `CX39-C / CX40-A` 当前 public 结论：
+
+1. overall `exp_delta = 0.000` vs `CX36-B`
+2. `misc / maze / flange / narrow = 0.000`
+3. `mp/csm` audit 继续为 `0.0`
+
+的前提下，继续把 runtime 压低。
+
+##### CX41-A：Shared Bridge-Substrate Node Factoring（`rs_cx41/cx41_a_sbn.py`）
+核心实现：
+1. 不再按 bridge path 直接做 review，而是先把 local bridge 候选折叠成共享的 bridge-substrate node；
+2. 对同一 coarse end-state 只保留一条代表 path；
+3. 再在这些 substrate nodes 上运行后续 prescreener / witness / contract。
+
+研究锚点：
+1. Experience Graphs / reusable local bridge search  
+   - `https://www.ri.cmu.edu/publications/experience-graphs-leveraging-multiple-planning-graphs-in-motion-planning/`
+2. LazySP / deferred expensive edge evaluation  
+   - `https://arxiv.org/abs/1707.04015`
+
+public 结果（`reports/rs_p0cx41_a_pilot_v1.md`）：
+1. 相对 `CX40-A`：
+   - overall `exp_delta = 0.000`
+   - `misc / maze / flange / narrow = 0.000`
+   - `mean_time_overhead_ratio = +0.598055`
+2. `No-Substrate-Quotient` 反而更快：
+   - `mean_time_overhead_ratio = +0.264589`
+
+结论：
+1. `CX41-A` 没有达到目标；
+2. 当前 shared substrate factoring 的 bookkeeping 成本大于它减少的 witness 评估成本；
+3. 这说明 current bridge duplication 还不足以支撑“共享终点节点折叠”这条线。
+
+##### CX41-B：Frontier-Dominance Review Gate（`rs_cx41/cx41_b_fdr.py`）
+核心实现：
+1. 不再尝试复用 witness 结果，而是直接改变**何时值得触发 bridge review**：
+   - 对每个 current node 计算 coarse frontier signature；
+   - 只允许当前 coarse frontier 中的 **dominant representative** 触发 expensive bridge review；
+   - 对同一 coarse frontier 上被当前 best-anchor 支配的后续节点，直接跳过 review；
+2. 这不是缓存 witness，而是把：
+   - “bridge review 应该发生在什么搜索边界上”
+   做成一个 planner-graph-level dominance mechanism。
+
+研究锚点：
+1. State dominance for path planning  
+   - `https://www.ri.cmu.edu/publications/using-state-dominance-for-path-planning-in-dynamic-environments-with-moving-obstacles/`
+2. Experience Graphs  
+   - `https://www.ri.cmu.edu/publications/experience-graphs-leveraging-multiple-planning-graphs-in-motion-planning/`
+3. LazySP  
+   - `https://arxiv.org/abs/1707.04015`
+
+public 结果（`reports/rs_p0cx41_b_pilot_v1.md`）：
+1. 相对 `CX40-A`：
+   - overall `exp_delta = 0.000`
+   - `misc = 0.000`
+   - `maze = 0.000`
+   - `flange = 0.000`
+   - `narrow = 0.000`
+   - `mean_time_overhead_ratio = -0.630112`
+2. 相对 `CX39-C`：
+   - overall `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.777657`
+     - 即相对 `CX39-C` 总 runtime 压缩约 `77.8%`
+3. `mp/csm` audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+关键 ablation：
+1. `No-Dominance-Gate`：
+   - 相对 `CX40-A` 仍是 `exp_delta = 0.000`
+   - 但 runtime 变为 `+0.280381`
+   - 说明大部分收益确实来自 dominance gate；
+2. `No-Depth2-Escalation`：
+   - 相对 `CX40-A` 为 `-0.468582`
+   - 仍显著快于 parent，但弱于 full；
+   - 说明当前 full 的最优轻量化结构是：
+     - **dominant frontier trigger + 保留必要的 depth-2 fallback**。
+
+结论：
+1. `CX41-B` 是当前 runtime 轻量化线上的 best branch；
+2. 它达到了本轮目标：
+   - **public / mp / csm 行为完全不变；**
+   - **相对 `CX40-A` 再压低 runtime 约 `63.0%`。**
+3. 从 `CX39-C` 往后的演进已经比较清楚：
+   - `CX40-A`：把 expensive review 做成 selective cascade；
+   - `CX41-B`：再把 review 触发时机收敛到 dominant frontier representatives。
+4. 当前主矛盾已从：
+   - “如何减少 expensive witness 的调用次数”
+   进一步转成：
+   - **如何在保持当前收益的前提下，把 remaining overhead 再压到接近 `CX36-B`。**
+5. frozen `rs_root_hard_v2` 复核（`reports/rs_p0cx41_b_hard_eval_v1.md`）进一步确认：
+   - `CX41-B` 相对 `CX40-A` 在 hard-test 上 **success / expansions / path_length 完全不变**；
+   - 但 `mean_time_overhead_ratio` 从 `CX40-A` 的 `11.932472` 降到 `4.528595`（相对 `CX3-D`），
+   - 且直接相对 `CX40-A` 仍有 `-0.572503` 的 runtime 改善；
+   - 说明它不只是 public 上更轻，而是在 frozen hard-test 上也保持同样的轻量化趋势。
+
+##### CX41-C：Frontier Disagreement Gate（`rs_cx41/cx41_c_fdg.py`）
+核心实现：
+1. 在 `CX41-B` 的 dominance gate 之前，再加一层 **cheap frontier disagreement contract**；
+2. 只用当前 primitive frontier 的低成本特征：
+   - unique coarse successor count
+   - top1/top2 delta 与 gap
+   - direction diversity / reverse fraction
+   - watchdog evidence
+   编译一个 positive/negative support band；
+3. 只有当 current frontier 显示出足够的结构性分歧时，才允许进入 `CX41-B` 的 expensive bridge review。
+
+public 结果（`reports/rs_p0cx41_c_pilot_v1.md`）：
+1. 相对 `CX40-A`：
+   - overall `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.640887`
+2. 但 `No-Disagreement-Gate` 反而略快：
+   - `mean_time_overhead_ratio = -0.644865`
+3. `No-Dominance-Gate` 明显更慢：
+   - `mean_time_overhead_ratio = -0.433626`
+
+结论：
+1. `CX41-C` 没有提供可信的新机制收益；
+2. 当前看起来更快，主要还是来自已有的 dominance gate，而不是新增 disagreement gate；
+3. 因而 `CX41` 线当前仍以 `CX41-B` 作为 best branch。
+   
+
+#### P0-CX42：让 `CX41-B` 成为 `CX34-A` 的轻量化兼容层
+状态：`COMPLETED-PARTIAL（2026-03-19：`CX42-A/B` 两条融合路线已完成 public + support 验证；其中 `CX42-B / Query Compatibility Release` 在 frozen hard-test 上保持 `CX34-A` 主效果不变并显著降低 runtime，但统一 public 对齐复现实验未确认其相对 `CX34-A` 的优势）`
+是否需要模型/方法修改：`是（本轮不再把 `CX41-B` 当作 `CX34-A` 的替代者，而是把它做成 train-calibrated lightweight compatibility release）`
+
+目标：
+在尽量保持 `CX34-A` 与 `CX41-B` 当前已证实效果不衰退的前提下，实现二者融合，并在 public / hard / support 口径下进一步降低时间消耗。
+
+##### CX42-A：Dominance-Conditioned Compatibility Layer（`rs_cx42/cx42_a_dcl.py`）
+核心实现：
+1. 直接把 `CX41-B` 的 frontier dominance 逻辑包到 `CX34-A` 外层；
+2. 对 dominated frontier states：
+   - 跳过 `CX34-A` 的 extra successors
+   - 跳过 `CX34-A` 的 successor ranking
+3. 目标是让 `CX34-A` 的昂贵 class/macro 逻辑只在 dominant frontier representatives 上运行。
+
+public 结果（`reports/rs_p0cx42_a_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - overall `exp_delta = -320.500`
+   - `misc = -3.667`
+   - `flange = -1034.000`
+   - `narrow = -144.250`
+   - runtime 虽然大幅下降，但代价不可接受
+2. `No-Dominance-Compatibility` 反而接近 parent：
+   - 说明当前这种“直接在 `CX34-A` 外层跳过 review”太粗暴，会破坏 parent 机制。
+
+结论：
+1. `CX42-A` 失败；
+2. 它说明：
+   - `CX41-B` 不能以“节点级强行屏蔽 `CX34-A` 内部逻辑”的方式并入；
+   - 真正可行的融合必须在 **query / regime release** 层，而不是 node-level 粗暴裁剪。
+
+##### CX42-B：Query Compatibility Release（`rs_cx42/cx42_b_qcr.py`）
+核心实现：
+1. 不把 `CX41-B` 直接塞进 `CX34-A` 的搜索循环，而是把它做成一个 **train-calibrated compatibility release**：
+   - default branch = `CX34-A`
+   - released branch = `CX41-B`
+2. 用 `calib_train` 上 `CX34-A` 与 `CX41-B` 的真实对比，编译一个 query-level compatibility contract：
+   - 只在 `CX41-B` 对 `CX34-A` 形成
+     - success 不差
+     - expansions 不差
+     - path 不差
+     - time 更低
+     的区域，才允许 release；
+3. 在线时根据 cheap scene features：
+   - `hard_likelihood`
+   - `misc_likelihood`
+   - `bridge_diffuse`
+   - `focus_gap`
+   - `path_openness`
+   - `barrier_peak`
+   等，选择本 query 使用 `CX34-A` 或 `CX41-B`；
+4. 这使 `CX41-B` 真正变成了 `CX34-A` 的 **lightweight compatibility layer**，而不是与之竞争的平行主线。
+
+研究锚点：
+1. option / macro preconditions: Ravichandar et al., CoRL 2021  
+   - `https://proceedings.mlr.press/v164/ravichandar22a.html`
+2. selective computation / reject option: Geifman and El-Yaniv, ICML 2019  
+   - `https://proceedings.mlr.press/v97/geifman19a.html`
+3. Experience Graphs / reusable planning knowledge: Phillips et al., ICRA 2012  
+   - `https://www.ri.cmu.edu/pub_files/2012/5/icra12.pdf`
+
+standalone public artifact（`reports/rs_p0cx42_b_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - overall `exp_delta = +2.333`
+   - `misc = +1.833`
+   - `maze = 0.000`
+   - `flange = +7.400`
+   - `narrow = -1.500`
+   - `mean_time_overhead_ratio = -0.464086`
+2. 相对 `CX41-B`：
+   - overall `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.338767`
+3. `mp/csm` audit 继续满足：
+   - `max_abs_field_diff = 0.0`
+
+统一 public 对齐复现实验（`reports/rs_p0cx42_public_compare_v1.md`）：
+1. 相对 `CX34-A (Full)`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.010346`
+2. `CX42-B (Full)` 与 `CX42-B (Always-CX34)` 几乎等价：
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.010013`（`Always-CX34` 相对 full）
+3. 因而此前 standalone artifact 上的 public 优势不应再视作冻结结论。
+
+hard-test 结果（`reports/rs_p0cx42_b_hard_eval_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `path_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.289825`
+2. 相对 `CX41-B`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `path_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.355294`
+
+关键结论：
+1. `CX42-B` 是当前第一条真正把：
+   - `CX34-A` 的 accepted public / hard effect
+   与
+   - `CX41-B` 的 runtime-light mechanism
+   融合起来的路线；
+2. 它在 frozen hard-test 上保住了 `CX34-A` 的 success / exp / path，同时显著降低 runtime；
+3. 但统一 public 对齐复现实验没有确认其相对 `CX34-A` 的 public 优势，因此它当前只能被定位为 **hard-runtime 融合候选**，还不能升格为新的 paper-facing 主线。
+
+
+#### P0-CX43：把 `CX41-B` 的 selective-computation 机制内联为 `CX34-A` 的结构化兼容层
+状态：`IN_PROGRESS（2026-03-19：已完成 `CX43-A/B/C/D` 四轮 unified public + support 验证；当前最稳分支为 `CX43-D / Pre-Gated Structural Rank Release`，它已把 public 退化压到几乎为 0，但仍未形成对 `CX34-A` 的明确 runtime 优势）`
+是否需要模型/方法修改：`是（本轮不再做 query-level branch switch，而是把 `CX41-B` 的 selective expensive-review 思想内联到 `CX34-A` 的 successor ranking 链路）`
+
+目标：
+1. 不再让 `CX41-B` 作为与 `CX34-A` 并列的 query branch；
+2. 而是把它收敛成 `CX34-A` 内部的 **轻量化 compatibility layer**：
+   - 只在结构上明显安全的结点上释放 cheap ranking / cheap review；
+   - 在不确定结点上仍 defer 回 `CX34-A` 全排序；
+3. 目标是在 `public + hard` 下同时做到：
+   - `success / expansions` 不退化；
+   - runtime 可验证地下降。
+
+研究锚点：
+1. Adaptive Neural Networks for Efficient Inference（PMLR 2017）
+   - `https://proceedings.mlr.press/v70/bolukbasi17a.html`
+2. SelectiveNet（ICML 2019）
+   - `https://proceedings.mlr.press/v97/geifman19a.html`
+3. Learning to Defer（NeurIPS 2018）
+   - `https://proceedings.neurips.cc/paper/2018/hash/09d37c08f7b129e96277388757530c72-Abstract.html`
+4. Experience Graphs（ICRA 2012）
+   - `https://www.ri.cmu.edu/publications/experience-graphs-leveraging-multiple-planning-graphs-in-motion-planning/`
+
+##### CX43-A：Approximate Rank Release（`rs_cx43/cx43_a_arr.py`）
+核心实现：
+1. 把 `CX34-A` 的 full successor ranking 视为 expensive review；
+2. 用 cheap proxy（`anchor/guided + rules/macro/must_precede`）近似排序；
+3. 再用 train-derived support band 决定何时 release、何时 defer 回 full ranking。
+
+public 结果（`reports/rs_p0cx43_a_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = -66.944`
+   - `mean_time_overhead_ratio = +0.022671`
+2. `Proxy-Only` 虽然 overall `exp_delta = +100.500`、runtime `-45.08%`，
+   但会把：
+   - `parasol_misc = -278.167`
+   - `narrow_passage = -93.500`
+   - `maze = -9.000`
+   打坏。
+
+结论：
+1. cheap proxy 本身有信息量；
+2. 但 support-band trigger 明显过宽，无法把“哪些 slice 可以 release”定义对。
+
+##### CX43-B：Structural Rank Release（`rs_cx43/cx43_b_srr.py`）
+核心实现：
+1. 不再用 feature support band 做主触发；
+2. 改为只在 **结构性低熵状态** 上 release：
+   - `class_key != uncertain|none`
+   - `must_precede = False`
+   - `macro_count = 0`
+   - `num_forbidden = 0`
+   - `top_label = allowed`
+   - `top_margin >= margin_thr`
+
+public 结果（`reports/rs_p0cx43_b_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = +0.111`
+   - `mean_time_overhead_ratio = +0.047107`
+2. family-wise：
+   - `parasol_misc = -0.500`
+   - `maze = 0.000`
+   - `narrow_passage = 0.000`
+   - `flange = +1.000`
+
+结论：
+1. 结构 trigger 已经把 `CX43-A` 的明显负迁移压掉；
+2. 但 runtime 仍未转负，说明 release 计算本身的额外开销仍然偏高。
+
+##### CX43-C：Inline Structural Rank Release（`rs_cx43/cx43_c_isrr.py`）
+核心实现：
+1. 把 `CX43-B` 同样的 structural trigger 内联进 `MSRPolicy`；
+2. 去掉 wrapper 层，把 compat layer 直接做成 `CX34-A` 的 rank override。
+
+public 结果（`reports/rs_p0cx43_c_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = +0.222`
+   - `mean_time_overhead_ratio = +0.047096`
+2. `No-Rank-Release` 也仍有 `+0.044581` runtime，
+   说明瓶颈不是 wrapper，而是“所有结点都先算一遍 proxy 再决定是否 full”。
+
+结论：
+1. 机制本身几乎不再伤 search effect；
+2. 但 release 前置计算范围过大，仍不足以形成 runtime 净收益。
+
+##### CX43-D：Pre-Gated Structural Rank Release（`rs_cx43/cx43_d_pgsrr.py`）
+核心实现：
+1. 在 `CX43-C` 前再加一层 **cheap structural rejector**：
+   - 若 `class_key == uncertain|none`
+   - 或 `must_precede = True`
+   - 或 `node_ctx/macros` 非空
+   - 或 candidate 中出现 macro / forbidden family
+   则直接 defer 到 full ranking；
+2. 只有通过 pre-gate 的结点才会计算 proxy margin；
+3. 这使 selective-computation 变成真正的两级 cascade，而不是“全局先算 proxy 再看要不要用”。
+
+public 结果（`reports/rs_p0cx43_d_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.002893`
+2. family-wise 全部恢复到与 `CX34-A` 持平：
+   - `parasol_misc = 0.000`
+   - `maze = 0.000`
+   - `narrow_passage = 0.000`
+   - `flange = 0.000`
+3. `No-Rank-Release` 仅 `+0.000160` runtime，
+   说明 pre-gate 已把额外 compat overhead 基本压到 0。
+
+support audit：
+1. `reports/rs_p0cx43_a_pilot_v1.md`
+2. `reports/rs_p0cx43_b_pilot_v1.md`
+3. `reports/rs_p0cx43_c_pilot_v1.md`
+4. `reports/rs_p0cx43_d_pilot_v1.md`
+5. `mp/csm` 均继续满足：
+   - `max_abs_field_diff = 0.0`
+
+阶段结论：
+1. `CX43` 已经把“把 `CX41-B` 的 selective-computation 机制编译进 `CX34-A`”推进到**机制层面可成立**：
+   - `A` 证明 proxy ranker 有真实 leverage；
+   - `B/C` 证明结构化 defer 能把负迁移压回近 0；
+   - `D` 证明 pre-gated cascade 可以把 public effect 完全保住；
+2. 但截至当前，最稳分支 `CX43-D` 还只是：
+   - `success/exp` 完全持平；
+   - runtime 近似持平（`+0.289%`）；
+3. 因而 `CX43` 当前结论是：
+   - **已得到可信的 compatibility-layer object**；
+   - **但尚未拿到 user 目标要求的“public / hard 双口径明确更快”**；
+4. 下一步若继续沿此线，应优先做：
+   - 对 release-hit 结点的 case-slice 诊断；
+   - 看 proxy rank 是否只在极少数 easy states 生效；
+   - 若是，则需要继续把 release object 从 `rank_successors` 扩展到更高 cost 的 review stage，而不是只在排序层做小修小补。
+
+补充诊断（`2026-03-19`）：
+1. 已新增 `CX43-D` 的 release-hit 轨迹切片与 hard eval：
+   - `reports/rs_p0cx43_d_release_diag_v1.md`
+   - `reports/rs_p0cx43_d_hard_eval_v1.md`
+2. release-hit 诊断给出一个更强且更直接的结论：
+   - `public` 总 `release_hits = 0`
+   - `hard` 总 `release_hits = 0`
+   - 也就是说，`CX43-D` 当前**没有任何一次真正发生 compat release**；
+3. 当前它之所以“保真”，不是因为找到了正确的 release 区，而是因为整个系统退化成：
+   - `pregate_reject -> fallback_full`
+   的保守复制器；
+4. `pregate` 的主要拦截来源不是同一个原因：
+   - `public` 上主要是 `uncertain`（`47323` 次）与 `ctx_macros`（`33809` 次）；
+   - `hard` 上则是 `ctx_macros`（`399718` 次）与 `uncertain`（`376967` 次）双主导；
+   - 说明在当前 `CX34-A` 真正耗时的状态分布里，“结构上显然安全到可 release”的区域几乎为空集；
+5. frozen hard eval 进一步确认了这一点：
+   - 相对 `CX34-A`，`CX43-D (Full)` 仍是
+     - `success_delta_pp = 0.000`
+     - `exp_delta = 0.000`
+     - `path_delta = 0.000`
+     - `mean_time_overhead_ratio = +0.013001`
+   - 而 `CX43-D (No-Rank-Release)` 也仍有 `+0.009313` runtime；
+   - 因而当前额外耗时主要来自“每个结点都做了一次 compat pre-gate / bookkeeping”，而不是 release 真正触发后的收益未覆盖成本；
+6. 这也解释了为什么 `CX43-D` 现在已经能“保真”却还不能“变快”：
+   - safe release set 目前是空的；
+   - 于是它只保留了 compat layer 的检查成本，却没有拿到任何 selective-computation 回报。
+
+
+#### P0-CX44：把 release object 从 ranking 层上提到 macro-review 阶段
+状态：`IN_PROGRESS（2026-03-20：`CX44-A / Representative Macro Review Contract` 已完成首轮 public/mp/csm/hard 验证；public 已出现真实 witness-hit，但整体仍略慢，hard 出现较强 runtime 正信号，不过当前仍需补顺序审计以排除 warm-order 影响）`
+是否需要模型/方法修改：`是（把 `CX41-B` 的 representative / dominance 思想直接编译到 `CX34-A` 的 macro review 阶段，而不是继续在 rank-successors 层做 release）`
+
+目标：
+1. 针对 `CX43-D` 暴露出的根因——safe release set 在 ranking 层为空；
+2. 把 compat layer 的对象上移到真正昂贵的 `macro review` 阶段；
+3. 只让少量 representative states 执行完整 macro review，
+   其余 dominated / equivalent states 通过 negative witness 继承“本局部结构下 macro 不必再算”的结论；
+4. 目标是在不损伤 `CX34-A` 效果的前提下，把 `CX41-B` 的 selective-computation 收益真正转移到 `CX34-A` 上。
+
+研究锚点：
+1. Experience Graphs（ICRA 2012）
+   - `https://www.ri.cmu.edu/publications/experience-graphs-leveraging-multiple-planning-graphs-in-motion-planning/`
+2. LazySP（IJRR / arXiv）
+   - `https://arxiv.org/abs/1707.04015`
+3. SelectiveNet（ICML 2019）
+   - `https://proceedings.mlr.press/v97/geifman19a.html`
+
+##### CX44-A：Representative Macro Review Contract（`rs_cx44/cx44_a_rmrc.py`）
+核心实现：
+1. 不再试图 release `rank_successors` 本身；
+2. 而是在 `CX34-A` 的 `extra_successors` / macro review 阶段引入一个 **representative negative witness contract**：
+   - 对每个 `scene_kind + class_key + coarse_state_key + must_precede + macro_presence` 签名，
+     只让代表态做 full macro review；
+   - 若代表态的最优非宏候选稳定优于最优宏候选，且 margin 超过阈值，
+     则存下一个 negative witness；
+   - 后续同签名且 anchor 不更优的 dominated states 直接跳过 macro review。
+3. 这条线的关键创新点不再是“换个 gate”，而是：
+   - 把 expensive macro review 变成 **局部结构签名上的负证书传递问题**；
+   - 让 `CX41-B` 的 representative computation 从 bridge review 外推到 `CX34-A` 的 macro-language execution stage。
+
+public 结果（`reports/rs_p0cx44_a_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.009422`
+2. family-wise：
+   - `parasol_misc` runtime 已转正为 `-0.015371`
+   - `bug_trap` runtime 也转正为 `-0.021761`
+   - `maze / narrow_passage / flange` 仍略慢，但都只剩 `~0.5%~1.4%` 量级
+3. witness 统计显示这次终于出现了真正的 compat activation：
+   - public 平均每个 case `witness_hits ≈ 195.3`
+   - public 平均 `witness_store_negative ≈ 49.3`
+   - 说明这次不再是 `CX43-D` 那种“release_hits = 0”的空转兼容层。
+
+hard 结果（`reports/rs_p0cx44_a_hard_eval_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = +0.041`
+   - `path_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.172074`
+2. hard 平均 witness 统计：
+   - `witness_hits ≈ 620.8 / case`
+   - `witness_store_negative ≈ 87.8 / case`
+   - `witness_full_reviews ≈ 10059.6 / case`
+3. 这说明在更大更难的 benchmark 上，
+   representative macro witness 的 activation 显著比 public 更强。
+
+当前谨慎结论：
+1. `CX44-A` 是第一条真正把：
+   - `CX41-B` 的 representative selective computation，
+   - 与 `CX34-A` 的 macro review cost object
+   在**同一机制层**上接起来的路线；
+2. 它比 `CX43-D` 更进一步：
+   - 不再是空转 compat layer；
+   - 已经出现真实 witness hit；
+3. 但经过 family-stratified Latin-square hard order-audit 后，
+   `CX44-A` 与 `CX44-A (No-Witness-Transfer)` 相对 `CX34-A` 都恢复成轻微正 overhead（约 `+0.85% / +0.94%`）；
+4. 因而当前最诚实的位置是：
+   - `CX44-A` 已经拿到了真实 macro-stage activation；
+   - 但 runtime 仍未被审成负值。
+
+##### CX44-B：Family-Conditional Witness Transfer（`rs_cx44/cx44_b_fcwt.py`）
+核心实现：
+1. 保留 `CX44-A` 的 representative macro review contract；
+2. 不再把 witness transfer 全局打开，而是只在已经观察到真实省算的 family 上启用：
+   - `parasol_misc`
+   - `deadend_labyrinth`
+   - `narrow_passage`
+3. 其余 family 完全回退 `CX34-A`，避免非目标族继续摊薄收益。
+
+public 结果（`reports/rs_p0cx44_b_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.000237`
+2. family-wise：
+   - `parasol_misc = -0.033670`
+   - `narrow_passage = -0.001562`
+   - `maze = +0.005854`
+   - `flange = +0.002765`
+3. 这使它成为当前第一条在 public 上把总 overhead 压到**近乎完全持平且微负**的融合分支。
+
+hard（order-audit 子集，`reports/rs_p0cx44_b_hard_eval_v1.md`）：
+1. 在经过顺序审计的 `14` case family-stratified 子集上，相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.000837`
+2. 因而 `CX44-B` 把 hard 也压到了近似完全持平，但尚未形成稳健负值。
+
+阶段结论：
+1. `CX44-B` 是目前最好的融合版本：
+   - `public` 已接近 0 overhead；
+   - `hard` 在 order-audit 子集上也接近 0 overhead；
+2. 但它仍然只是“几乎持平”，还不能写成“稳定负 runtime”。
+
+##### CX44-C：Family-Conditional + Redundancy-Threshold Witness Transfer（`rs_cx44/cx44_c_rdt.py`）
+核心实现：
+1. 在 `CX44-B` 的 family 约束之上，再要求 signature 在 `calib_train` 中重复次数达到 `min_redundancy` 才允许 witness transfer；
+2. 核心目标不是继续缩 family，而是在目标 family 内只放行“重复度足够高”的局部结构。
+
+public 结果（`reports/rs_p0cx44_c_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = -10.000`
+   - `mean_time_overhead_ratio = +0.016996`
+2. family-wise 主要负项重新落回：
+   - `parasol_misc = -30.000`
+3. 诊断显示：
+   - `witness_hits = 0`
+   - `redundancy_reject` 覆盖了所有目标 family 结点
+   - 说明 redundancy threshold 把 compat layer 压成了纯 rejector。
+
+结论：
+1. `CX44-C` 失败；
+2. 当前 redundancy threshold 的定义过于僵硬，直接把 `CX44-B` 已有的真实 activation 全部压掉；
+3. 该分支不应保留为当前主 follow-up。
+
+##### CX44-D：Softness-Weighted Redundancy Witness（`rs_cx44/cx44_d_swrt.py`）
+核心实现：
+1. 不再把 redundancy 当成硬 gate；
+2. 而是把 train-derived signature count 映射成一个连续 `weight ∈ [0,1]`；
+3. 该权重同时控制：
+   - witness `support` 的累积强度；
+   - reuse `TTL`；
+   - anchor 复用容忍度；
+4. 目的是让高冗余 signature 更激进地复用 negative witness，而低冗余 signature 仅弱复用，而不是像 `CX44-C` 那样一刀切拒绝。
+
+public 结果（`reports/rs_p0cx44_d_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = -10.000`
+   - `mean_time_overhead_ratio = +0.407613`
+2. family-wise：
+   - `parasol_misc = -30.000`
+   - `narrow_passage = 0.000` 但 runtime `+0.330207`
+   - `flange = 0.000` 但 runtime `+0.473388`
+3. witness 统计：
+   - `witness_hits ≈ 40.9 / case`
+   - `soft_skip_hits ≈ 40.9 / case`
+   - `soft_weight_mean ≈ 0.084`
+4. 说明这条线没有像 `CX44-C` 那样把 activation 压成 0，
+   但它把 witness softness 扩散成了大范围的额外 bookkeeping 与错误复用。
+
+结论：
+1. `CX44-D` 失败；
+2. 问题不在于“有没有 softness”，而在于当前连续权重把大量低质量 signature 也纳入了 witness 状态更新，导致：
+   - 激活保住了；
+   - 但 runtime 与 `parasol_misc` 一起明显变坏；
+3. 因而该分支也不应作为当前主 follow-up。
+
+更新后的阶段结论：
+1. `CX44-A` 证明了 macro-stage representative witness 是对的；
+2. `CX44-B` 证明了 family-conditional 收缩能把系统压到 public/hard 近乎持平，是当前 best surviving branch；
+3. `CX44-C` 说明硬 redundancy threshold 会把 activation 全压没；
+4. `CX44-D` 说明软 redundancy 若不配合更强的 signature 质量建模，也会把低质量 witness 大量引入系统，导致显著负迁移；
+5. 因而 `CX44` 线当前最稳的位置仍是 `CX44-B`。
+
 
 #### P0-D：把“RS 本体贡献”与“残差/上层网络贡献”彻底拆开
 目标：证明真正的根本创新点是 `RS 代价场`，而不是上层组合偶然奏效。

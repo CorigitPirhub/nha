@@ -1,0 +1,44 @@
+[cx35:calib-train] prepared 5/10
+[cx35:calib-train] prepared 10/10
+[cx35:calib-val] prepared 5/7
+[cx35:calib-val] prepared 7/7
+[cx35:public] prepared 5/18
+[cx35:public] prepared 10/18
+[cx35:public] prepared 15/18
+[cx35:public] prepared 18/18
+[CX34-A (Parent)] 5/7
+[CX34-A (Parent)] 7/7
+[CX35-A (Candidate)] 5/7
+[CX35-A (Candidate)] 7/7
+[cx35:CX35-A] trial=1 params=CX35ATMFIParams(turn_bridge_max=0.1, turn_focus_max=0.36, rescue_bridge_max=0.08, rescue_focus_min=0.39, rescue_path_min=0.99, rescue_budget=1, suppress_bridge_min=0.11, suppress_bridge_max=0.13, suppress_focus_max=0.31, suppress_path_min=0.97, stubborn_bridge_min=0.125, stubborn_focus_max=0.34, stubborn_path_max=0.97, maze_revisit_thr=2, maze_stall_steps=18, reverse_required_thr=0.1, trap_thr=0.54, progress_eps=0.02, commit_fail_margin=0.05, failure_ttl=32, history_window=16, cell_stride=2, yaw_bins=24, min_hits=2) score=(1, 0.0, 0.0, 0.0, -0.25575434081761794)
+[CX35-A (Full)] 5/18
+[CX35-A (Full)] 10/18
+[CX35-A (Full)] 15/18
+[CX35-A (Full)] 18/18
+[CX35-A (No-Typed-Macro-Family)] 5/18
+[CX35-A (No-Typed-Macro-Family)] 10/18
+[CX35-A (No-Typed-Macro-Family)] 15/18
+[CX35-A (No-Typed-Macro-Family)] 18/18
+[CX35-A (No-Witness)] 5/18
+[CX35-A (No-Witness)] 10/18
+[CX35-A (No-Witness)] 15/18
+[CX35-A (No-Witness)] 18/18
+[cx35:standard:mp] 100/800
+[cx35:standard:mp] 200/800
+[cx35:standard:mp] 300/800
+[cx35:standard:mp] 400/800
+[cx35:standard:mp] 500/800
+[cx35:standard:mp] 600/800
+[cx35:standard:mp] 700/800
+[cx35:standard:mp] 800/800
+[cx35:standard:csm] 100/400
+[cx35:standard:csm] 200/400
+[cx35:standard:csm] 300/400
+[cx35:standard:csm] 400/400
+Traceback (most recent call last):
+  File "/home/zzy/TrajectoryPlanning/distill/scripts/run_rs_p0cx35_round1_v1.py", line 357, in <module>
+    main()
+  File "/home/zzy/TrajectoryPlanning/distill/scripts/run_rs_p0cx35_round1_v1.py", line 304, in main
+    full_parent = next(r for r in public_delta_parent if r['method'] == f'{variant} (Full)')
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+StopIteration

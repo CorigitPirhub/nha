@@ -1,0 +1,1 @@
+# P0-CX34 Standard Audit V1\n\n- protocol: ordinary-support audit checks `build_standard_field == accepted CX3-D` by construction\n\n- `CX34-A` / `mp`: num_cases=`0`, max_abs_field_diff=`0.000000`, mean_abs_field_diff=`0.000000`\n- `CX34-A` / `csm`: num_cases=`0`, max_abs_field_diff=`0.000000`, mean_abs_field_diff=`0.000000`

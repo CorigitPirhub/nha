@@ -102,27 +102,39 @@ not
 
 ## Nonholonomic Neural Heuristic for Hybrid A* (Ackermann)
 
-### Current RS-grounded status (2026-03-09)
+### Current RS-grounded status (2026-03-17)
 
-Within the nonholonomic track, the currently accepted RS-grounded refinement branch is:
-- **`RS + CX3-D / refined RS-HPG`**
+Within the nonholonomic track, the currently accepted RS-grounded branch is:
+- **`RS + CX34-A / Subtype-Specific Macro Rescue`**
+
+Current leading fusion candidate:
+- **`RS + CX34-A + CX42-B / Query Compatibility Release`**
 
 Honest current reading:
-- this branch is a **protected conservative efficiency refinement**, not yet a final high-gain solution;
-- it improves search effort modestly over the same-`alpha` residual baseline while protecting `parasol_misc`;
-- it does **not** yet recover the frozen public success axis to `1.0`.
+- this branch is the first one on the `P0-CX` line that makes public `parasol_misc` non-negative while keeping `maze = 0.0`;
+- on the canonical stored artifact, it preserves the `CX33-B` head-family gains (`flange = +1421.0`, `narrow_passage = +99.75`) and lifts overall public `exp_delta` to `+420.389`;
+- a frozen hard-test verification on `rs_root_hard_v2/test` is now complete on the locked `cuda` artifact: vs `CX3-D`, `success_delta_pp = +2.740` and `exp_delta = +196.548`, see `reports/rs_p0cx34_a_hard_eval_v1.md`;
+- exact public numbers remain frozen to `outputs/rs_p0cx34_a_pilot_v1`, while exact hard-test numbers are frozen to `outputs/rs_p0cx34_a_hard_eval_cuda_v1`;
+- it is still **not** a final deployable answer: runtime remains high, and hard-test still shows family-specific regressions on `deadend_labyrinth`, `flange`, and `parasol_misc`.
+
+Fusion-candidate reading:
+- `CX42-B` is currently the strongest **hard-runtime fusion candidate** for the RS track;
+- on the unified public rerun `reports/rs_p0cx42_public_compare_v1.md`, it is tied with `CX34-A` on success / expansions and is slightly slower on average (`mean_time_overhead_ratio = +0.010346`), so its public advantage is not currently confirmed;
+- on the frozen `rs_root_hard_v2/test` artifact it preserves `CX34-A` exactly on success / expansions / path length while reducing runtime (`mean_time_overhead_ratio = -0.289825`);
+- despite this, the paper-facing accepted branch remains `CX34-A`; `CX42-B` should currently be treated as a **compatibility-layer candidate**, not yet as the frozen accepted claim.
 
 Read these files first for the current RS-grounded branch:
 - paper-facing claim contract: `paper/rs_cx_current_claim_contract.md`
-- accepted summary: `reports/rs_p0cx3_round1_summary.md`
-- statistical reinforcement: `reports/rs_p0cx3_stats_v1.md`
-- `CX4` first-round implementation summary: `reports/rs_p0cx4_round1_summary.md`
-- `CX5` first-round implementation summary: `reports/rs_p0cx5_round1_summary.md`
-- `CX6` first-round implementation summary: `reports/rs_p0cx6_round1_summary.md`
-- `CX6` lightweight bootstrap note: `reports/rs_p0cx6_stats_v1.md`
-- `CX7` first-round implementation summary: `reports/rs_p0cx7_round1_summary.md`
-- `CX7` lightweight bootstrap note: `reports/rs_p0cx7_stats_v1.md`
-- task-book status, candidate freeze and next-step rationale: `TASK.md`
+- fusion-candidate contract: `paper/rs_cx_fusion_candidate_contract.md`
+- canonical accepted summary: `reports/rs_p0cx34_round1_summary.md`
+- recheck / merge audit: `reports/rs_p0cx34_recheck_audit_v1.md`
+- frozen hard-test eval: `reports/rs_p0cx34_a_hard_eval_v1.md`
+- canonical pilot report: `reports/rs_p0cx34_a_pilot_v1.md`
+- fusion candidate public report: `reports/rs_p0cx42_b_pilot_v1.md`
+- fusion candidate hard-test report: `reports/rs_p0cx42_b_hard_eval_v1.md`
+- full-support audit: `reports/rs_p0cx34_standard_audit_v1.md`
+- previous parent branch summary: `reports/rs_p0cx33_round1_summary.md`
+- task-book status, acceptance scope and next-step rationale: `TASK.md`
 
 This project implements a full prototype for TRO-style iterative research:
 

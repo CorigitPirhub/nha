@@ -1,6 +1,6 @@
 # Risk-Calibrated Compute Shaping（Weighted-Search Tree Portfolio）— strict 主线 INTRO
 
-修改日期：2026-03-06
+修改日期：2026-03-17
 
 > 本仓库包含多条研究主线；**当前 strict 语义下可成立的 Router 主叙事**，已经从早期的 **Dual-Path Probe Router**，切换为 **Risk-Calibrated Single-Search Compute Shaping / Weighted-Search Tree Portfolio**。
 > 
@@ -9,7 +9,8 @@
 > - 当前真正通过 `Phase29 -> Phase13 -> Phase22` 全链路 strict 验证的，是 **零-probe、单搜索内部 compute-shaping** 的 `O / TreeWeightPortfolio`；
 > - 因而本文档以下所有“当前主方法 / 当前主结论 / 当前 strict 口径”均以 `Phase29/13/22` 的新产物为准，而不是以旧 probe-router 的 v5 strict bundle 为准。
 > - `Step 14` 的后继方法筛查现已完成四轮 strict `calib_train/calib_val` 验证：`A/B/C/D` 见 `reports/router_phase30_step14_trials_v1.md`，`E/F/G/H` 见 `reports/router_phase31_step14_fresh_trials_v1.md`，沿 `14-F` 主线继续推进的 TARP-line 变体见 `reports/router_phase32_step14_tarp_line_v1.md`（最强定向 follow-up 见 `reports/router_phase32_step14_tarp_line_f2b_hgb_v1.md`），最终 `RCWS-B` 冲刺见 `reports/router_phase33_step14_rcwsb_trials_v1.md`（高容量 follow-up 见 `reports/router_phase33_step14_rcwsb_b1_followup_v1.md`）；四轮都没有候选强到足以替换 `O / TreeWeightPortfolio`。
-> - 当前更高优先级的下一阶段工作仍是 `P0-CX`：在 `RS` 根基之上，通过**基础模型层面**的创新去建立显著优势区间；当前 accepted 主线仍是 `RS + CX3-D / refined RS-HPG`，而 `CX7` 的 accountable-intervention family（`CX7-A/B/C/D`）首轮实现也未能替代它；对应结论见 `reports/rs_p0cx7_round1_summary.md`、`reports/rs_p0cx7_stats_v1.md` 与 `TASK.md`。
+> - 当前更高优先级的下一阶段工作仍是 `P0-CX`：在 `RS` 根基之上，通过**基础模型层面**的创新去建立显著优势区间；截至 `2026-03-19`，paper-facing accepted `RS` 主线仍保持为 `RS + CX34-A / Subtype-Specific Macro Rescue`。该主线的 public canonical artifact 见 `reports/rs_p0cx34_round1_summary.md`，full-support audit 见 `reports/rs_p0cx34_standard_audit_v1.md`，复核审计见 `reports/rs_p0cx34_recheck_audit_v1.md`；frozen hard-test eval `reports/rs_p0cx34_a_hard_eval_v1.md` 在 `rs_root_hard_v2/test` 上相对 `CX3-D` 取得 `success_delta_pp = +2.740`、`exp_delta = +196.548`，但仍伴随高 runtime overhead 与若干 hard-family 负项。
+> - 当前最强的**融合主线候选**仍是 `RS + CX34-A + CX42-B / Query Compatibility Release`，但其证据边界已更新：统一 public 对齐复现实验 `reports/rs_p0cx42_public_compare_v1.md` 显示它相对 `CX34-A` 仅为 `success / exp` 持平且平均 runtime 略慢（`mean_time_overhead_ratio = +0.010346`），因此 public 升级尚未被确认；目前真正稳固的正证据来自 frozen `rs_root_hard_v2`，其在保持 `success / exp / path` 完全不变的前提下把 runtime 再下降约 `29.0%`。因此这条线当前应视为 hard-runtime fusion candidate，而不是已冻结主结论。
 >
 > 术语约定：
 > - **arm / 臂**：可选的计算动作/规划器配置。当前主线中，arm 不是“额外 probe 模块”，而是同一 A* 主搜索内部的不同启发权重，例如 `fast`, `wa_w125`, `wa_w135`, `slow`。
