@@ -7786,6 +7786,348 @@ public 结果（`reports/rs_p0cx44_d_pilot_v1.md`）：
 5. 因而 `CX44` 线当前最稳的位置仍是 `CX44-B`。
 
 
+#### P0-CX45：质量校准 witness 机制
+状态：`IN_PROGRESS（2026-03-20：已完成 `CX45-A/B/C` 三轮 public/mp/csm 验证，但目前仍未超过 `CX44-B`）`
+是否需要模型/方法修改：`是（从“冗余是否足够多”转向“witness 质量是否足够高”）`
+
+目标：
+1. 针对 `CX44-B` 已有真实 activation、但仍只能把系统压到近乎持平的问题；
+2. 用更高质量的 witness 置信机制替代简单的 family gate / redundancy gate；
+3. 期望在保持 `success/exp` 不退化的前提下，把 public/runtime 从近 0 进一步拉开为稳定负值。
+
+##### CX45-A：Quality-Calibrated Witness Transfer（`rs_cx45/cx45_a_qcwt.py`）
+核心实现：
+1. 用 `redundancy_score × margin_score` 构造 witness 置信度；
+2. 用该置信度去控制：
+   - 是否允许 witness 复用；
+   - anchor 容忍范围；
+   - witness TTL。
+
+public 结果（`reports/rs_p0cx45_a_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = -10.000`
+   - `mean_time_overhead_ratio = +0.003823`
+2. `parasol_misc` 仍掉回：
+   - `exp_delta = -30.000`
+
+结论：
+1. `CX45-A` 没达到目标；
+2. 但它至少证明：quality 线比 `CX44-D` 更稳。
+
+##### CX45-B：Evidence-Accumulated Witness（`rs_cx45/cx45_b_eaw.py`）
+核心实现：
+1. 不再要求单次高置信；
+2. 对同一 signature 的负证据做 episode-local 累积：
+   - `support_t = decay * support_{t-1} + evidence_t`
+3. 当 support 超阈值后才激活 witness skip。
+
+public 结果（`reports/rs_p0cx45_b_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.012338`
+2. witness activation 保住了：
+   - `witness_hits ≈ 42.7 / case`
+3. 但整体 runtime 仍为正值，未能超过 `CX44-B`。
+
+结论：
+1. `CX45-B` 比 `CX45-A` 更完整地保住了 `CX34-A` 效果；
+2. 但 quality accumulation 仍未把 compat layer 推过“稳定负 runtime”的门槛。
+
+##### CX45-C：Macro-Bearing Evidence-Accumulated Witness（`rs_cx45/cx45_c_mbeaw.py`）
+核心实现：
+1. 在 `CX45-B` 基础上加入更强的 object precondition：
+   - witness 只作用于 **macro-bearing** 结点；
+   - 对没有 macro review cost 的结点直接回退 parent。
+2. 这一步的目的，是让 witness object 与真实计算成本对象更对齐。
+
+public 结果（`reports/rs_p0cx45_c_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.004763`
+2. witness activation 仍然保住：
+   - `witness_hits ≈ 44.2 / case`
+3. 但即便把 macro-free bookkeeping 切掉，runtime 仍只是接近 0，没有翻负。
+
+阶段结论：
+1. `CX45` 线已经确认一件事：
+   - witness 质量的确比单纯冗余更重要；
+   - 但当前 quality calibration 还不足以把 `CX44-B` 进一步推进到稳定负 runtime；
+2. 在 `A/B/C` 三轮之后，当前最稳分支仍然是：
+   - `CX44-B / Family-Conditional Witness Transfer`
+3. 因而 `CX45` 目前给出的最可靠结论不是“已经打穿”，而是：
+   - **quality-calibrated witness 是正确方向，但还需要更强的 signature-quality model 才能真正兑现到 runtime。**
+
+
+#### P0-CX46：family/scenario-calibrated witness quality（进行中）
+状态：`IN_PROGRESS（2026-03-21：已完成 `CX46-F / reliable-local boundary contract` 的 public + hard-subset 验证；public 已在保留真实 witness activation 的前提下实现总体负 runtime，但 hard 上的 witness-specific runtime 增益仍需更严格 order-audit 确认）`
+是否需要模型/方法修改：`是（当前已把 reliable/local boundary 显式化，但还需要进一步确认 hard 上的 runtime 不是由非 witness 因素带来的）`
+
+目标：
+1. 不再只靠全局 quality score；
+2. 对 `parasol_misc / deadend_labyrinth / narrow_passage` 的 witness quality 做更细粒度建模；
+3. 同时避免再次退化成：
+   - `witness_hits = 0` 的静音兼容层；
+   - 或 `parasol_misc` 被重新打坏。
+
+##### CX46-A：Family-Calibrated Witness Prior（`rs_cx46/cx46_a_fcwp.py`）
+核心想法：
+1. 按 family 级别分别定义 witness prior floor 与 support threshold；
+2. 试图把 `parasol_misc` 和 `narrow_passage/deadend` 的质量要求解耦。
+
+结论：
+1. 该版本在实现与对象定义上暴露出更根本问题：coarse family 粒度仍不足；
+2. 它没有产出可冻结的 public 结论，因此不作为当前保留分支。
+
+##### CX46-B：Scenario-Calibrated Witness Prior（`rs_cx46/cx46_b_scwp.py`）
+核心想法：
+1. 把 quality prior 从 family 再推进到 scenario-specific；
+2. `parasol_misc / deadend_labyrinth / narrow_passage` 各自拥有独立的 prior floor / support threshold。
+
+public 结果（`reports/rs_p0cx46_b_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.003371`
+2. 这是当前首次把 public runtime 再次拉成稳定负值；
+3. 但诊断同时显示：
+   - `witness_hits = 0`
+   - `fcwp_skip_hits = 0`
+
+结论：
+1. `CX46-B` 虽然在 runtime 上优于 `CX44-B`；
+2. 但它是靠把 compat layer 更彻底地静音换来的，不满足“必须保留真实 witness activation”的条件。
+
+##### CX46-C：Scenario-Calibrated Macro-Bearing Witness Prior（`rs_cx46/cx46_c_mscwp.py`）
+核心想法：
+1. 在 `CX46-B` 的 scenario prior 基础上，进一步把 witness object 限制到 macro-bearing 结点；
+2. 目标是恢复真实 activation，同时维持 `CX46-B` 的负 runtime。
+
+public 结果（`reports/rs_p0cx46_c_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.018614`
+2. 但 `witness_hits` 仍然是 `0`。
+
+结论：
+1. `CX46-C` 同样失败；
+2. 它既没有保住 `CX46-B` 的负 runtime，也没有恢复真实 activation。
+
+##### CX46-D：Witness Quality Representation（`rs_cx46/cx46_d_ewv.py`）
+核心想法：
+1. 不再主要调 prior floor 或触发阈值，而是直接建模 negative witness 本体是否“值得信”；
+2. 训练期先跑 `CX44-B` 风格的真实 witness 生命周期，按 `reliable / local / fragile` 三类整理：
+   - 哪些 signature 的 negative witness 可复用且复用跨度更长；
+   - 哪些虽然会重复出现，但只在短程局部有效；
+   - 哪些重复出现却几乎不可复用，属于 brittle witness；
+3. 在线阶段不再用单一 hard gate，而是把 witness 的 `TTL / anchor radius / reuse strength` 作为质量表示的连续函数；
+4. 这样把问题从“要不要触发”推进到“这个 witness 本体是不是值得信、能信到什么程度”。
+
+public 结果（`reports/rs_p0cx46_d_wqr_v1/rs_p0cx46_d_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.000980`
+2. 真实 activation 已保留：
+   - `witness_hits = 85.0 / case`（`parasol_misc`）
+   - `witness_hits = 236.5 / case`（`narrow_passage`）
+3. 相对 `CX46-D (No-Witness-Transfer)`：
+   - `parasol_misc` 的 runtime 从 `+0.020013` 拉到 `-0.010729`
+   - `narrow_passage` 的 runtime 从 `+0.009139` 拉到 `+0.002034`
+4. 但总体 runtime 仍略高于 `CX34-A`，尚未达成稳定负值。
+
+hard 子集结果（`reports/rs_p0cx46_d_wqr_hard_subset_v1.md`）：
+1. 在 `rs_root_hard_v2_order_audit_subset_v1/test` 上，相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.007542`
+2. 真实 activation 同样保留：
+   - `avg_witness_hits = 79.286 / case`
+3. 但相对 `CX46-D (No-Witness-Transfer)` 仍没有形成净省算。
+
+阶段结论：
+1. `CX46-B` 说明 scenario-specific prior 是必要的；
+2. `CX46-D` 进一步证明：把 witness 本体拆成 `reliable / local / fragile` 三类是对的，因为它第一次同时满足了：
+   - 保留真实 witness activation；
+   - 且在 `parasol_misc` 上出现可复现的 runtime 改善；
+3. 但该版仍未把这种局部收益扩展成 overall negative runtime；
+4. 当前瓶颈不再是“是否触发”，而是：
+   - `reliable witness` 的识别还不够尖锐；
+   - `local witness` 的半径/TTL 仍偏保守或偏噪；
+   - `fragile witness` 虽被削弱，但尚不足以抵消兼容层本身的管理开销。
+
+##### CX46-F：Reliable-Local Boundary Contract（`rs_cx46/cx46_f_rbcc.py`）
+核心想法：
+1. 不再重做 `CX46-D` 的质量表示本体，而是在其已验证有效的 `reliable / local / fragile` band 上，进一步把 `reliable` 与 `local` 的**复用契约**显式分开；
+2. 对 `reliable` witness：
+   - 放大 TTL 与 anchor radius；
+3. 对 `local` witness：
+   - 缩短 TTL；
+   - 缩小 anchor radius；
+   - 在 probe 阶段再追加一层更严格的局部时空合同；
+4. 同时把 `reliable-local` 的 posterior 间隔转成 `certainty`，让边界更清晰的 witness 才能拿到更强的复用权。
+
+public 结果（`reports/rs_p0cx46_f_rbcc_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.000930`
+2. 这是当前首次在**保留真实 witness activation** 的前提下，把 overall public runtime 从 `CX46-D` 的 `+0.000980` 推到负值；
+3. 真实 activation 仍保留：
+   - `parasol_misc`: `witness_hits = 77.667 / case`
+   - `narrow_passage`: `witness_hits = 183.750 / case`
+4. 相对 `CX46-F (No-Witness-Transfer)`：
+   - overall runtime 从 `+0.000328` 拉到 `-0.000930`
+   - `parasol_misc` 从 `+0.020657` 拉到 `-0.001813`
+   - `flange` 从 `-0.002529` 拉到 `-0.007033`
+5. `mp/csm` standard support audit 仍为 `0` 差异，说明没有口径漂移。
+
+hard 子集结果（`reports/rs_p0cx46_f_rbcc_hard_subset_v1.md`）：
+1. 在 `rs_root_hard_v2_order_audit_subset_v1/test` 上，相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.149456`
+2. 真实 activation 仍保留：
+   - `avg_witness_hits = 64.0 / case`
+3. 但同一轮中 `CX46-F (No-Witness-Transfer)` 也出现了近似幅度的负 runtime（`-0.148678`），因此当前 hard 结果更应解释为：
+   - **hard 子集未见负面回退；**
+   - 但 witness-specific runtime 增益仍需更严格的 order-audit 才能确认。
+
+hard order-audit 结果（`reports/rs_p0cx46_f_hard_order_audit_v1.md`）：
+1. 在 `rs_root_hard_v2_order_audit_subset_v1/test` 的 Latin-square 顺序审计下，相对 `CX34-A`：
+   - `CX46-F (Full)`：`mean_time_overhead_ratio = +0.006238`
+   - `CX46-F (No-Witness-Transfer)`：`mean_time_overhead_ratio = +0.007808`
+2. 直接对 `CX46-F (Full)` 与 `CX46-F (No-Witness-Transfer)` 做配对比较：
+   - overall `mean_time_delta_ms = -6.039`
+   - `mean_plan_delta_ms = -6.039`
+   - `win_rate_full = 0.524`
+   - `avg_witness_hits_full = 64.0`
+3. 按 position 看：
+   - pos0：`Full` 相对 `No-Witness-Transfer` 为负 (`-0.002594`)
+   - pos1：`Full` 相对 `No-Witness-Transfer` 为负 (`-0.003534`)
+   - pos2：`Full` 相对 `No-Witness-Transfer` 为正 (`+0.001467`)
+4. 因而当前可下的最稳妥结论是：
+   - `CX46-F` 在 hard 上的优势**并非完全来自顺序噪声**，因为审计后 `Full` 相对 `No-Witness-Transfer` 仍保留小幅负 runtime；
+   - 但该优势幅度仍然偏小，尚不足以下“hard 上已经稳定大幅省算”的强结论。
+
+##### CX46-J：Review Credit Scheduler（`rs_cx46/cx46_j_rrc.py`）
+核心想法：
+1. 不再做结构去重，而是对 expensive review 分配一个 episode 内的 `credit`：
+   - review miss 会扣分；
+   - witness hit / store 会回补分数；
+2. 当 `credit` 已明显变差时，不再每一步都做 full review，而是按 stride 稀疏化 review；
+3. 目标是把 “review budget” 变成一个随 episode 内反馈动态调节的过程，而不是静态阈值或静态 gate。
+
+dev 结果（`outputs/rs_p0cx46_j_rrc_dev_v1/dev_summary.json`）：
+1. `trial 2` 在 `calib_hard_v1` 上同时满足：
+   - `time_gain_vs_cx34 > 0`
+   - `time_gain_vs_nowt > 0`
+2. 因此它被推进到 public / hard order-audit。
+
+public 结果（`reports/rs_p0cx46_j_public_v1.md`）：
+1. 相对 `CX46-F`：
+   - `mean_time_overhead_ratio = -0.001941`
+2. 相对 `CX34-A`：
+   - `mean_time_overhead_ratio = +0.004500`
+3. 它在 `parasol_misc` 上继续改善：
+   - 从 `CX46-F` 的 `-0.001001` 推到 `-0.010051`
+4. 但总体仍未重新压回到相对 `CX34-A` 的负 runtime。
+
+hard order-audit 结果（`reports/rs_p0cx46_j_hard_order_audit_v1.md`）：
+1. 相对 `CX34-A`：
+   - `CX46-J (Full)`：`+0.027894`
+   - `CX46-J (No-Witness-Transfer)`：`+0.015474`
+   - `CX46-J (No-Credit-Gate)`：`+0.032374`
+2. 相对 `CX46-J (No-Credit-Gate)`，`CX46-J (Full)` 确实更好：
+   - `mean_time_overhead_ratio = -0.004340`
+3. 但相对 `CX46-J (No-Witness-Transfer)`，`CX46-J (Full)` 反而更差：
+   - `mean_time_overhead_ratio = +0.012231`
+
+结论：
+1. `review credit scheduler` 的方向不是完全错误，因为：
+   - public 上它相对 `CX46-F` 继续前进；
+   - hard 上 `credit gate` 相对 `No-Credit-Gate` 也确有正贡献；
+2. 但当前实现仍然没有把收益稳定兑现成“relative to no-witness / relative to CX34 的净省算”；
+3. 因而 `CX46-J` 暂不作为主线保留分支。
+
+
+#### P0-CX46：family/scenario-calibrated witness quality
+状态：`IN_PROGRESS（2026-03-21：`CX46-F / reliable-local boundary contract` 已完成 public + hard-subset + hard order-audit 子集验证；public 已实现“保留真实 witness activation + overall 负 runtime”，hard order-audit 也显示存在小幅 witness-specific 负 runtime，但优势仍偏小）`
+是否需要模型/方法修改：`是（当前重点从“是否存在 witness-specific gain”转向“如何把 hard 上的小幅 gain 放大成稳定优势”）`
+
+目标：
+1. 针对 `CX45` 已证明的事实——quality-calibrated witness 方向是对的，但质量模型还不够强；
+2. 继续收口到更精细的 `family/scenario` 级 witness 质量先验；
+3. 目标是在：
+   - `public` 上相对 `CX34-A` 保持 `success/exp` 持平，并把 runtime 稳定拉成负值；
+   - `hard` 上在 order-audit 条件下也出现稳定负 runtime；
+   - 同时必须保留真实 witness activation，不能退化成 `witness_hits = 0` 的空转兼容层。
+
+##### CX46-A：Family-Calibrated Witness Prior（`rs_cx46/cx46_a_fcwp.py`）
+核心想法：
+1. 不再用统一 witness quality 门槛；
+2. 对目标 family 分别设定不同 prior floor 与 support threshold；
+3. 目的是避免 `parasol_misc` 和 `narrow_passage` 被同一套质量条件绑死。
+
+结论：
+1. 该分支在实现上暴露出更根本的问题：以 coarse `scene_kind` 做 quality prior 粒度不够；
+2. 在实际运行中没有形成可引用的收口结果，因此没有作为本阶段保留分支。
+
+##### CX46-B：Scenario-Calibrated Witness Prior（`rs_cx46/cx46_b_scwp.py`）
+核心想法：
+1. 把质量先验从 coarse family 改成 scenario-specific：
+   - `parasol_misc`
+   - `deadend_labyrinth`
+   - `narrow_passage`
+   各自单独设定 prior floor / support threshold；
+2. 目标是把 `parasol_misc` 的 witness 变得更保守，同时保留 `narrow_passage / deadend_labyrinth` 的省算空间。
+
+public 结果（`reports/rs_p0cx46_b_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = -0.003371`
+2. 这是第一次把 total public runtime 再次拉成稳定负值，而且 `parasol_misc / flange / maze` 都没有重新掉回负迁移。
+3. 但诊断同时显示：
+   - `witness_hits = 0`
+   - `fcwp_skip_hits = 0`
+4. 因而这条线虽然“更快”，但更像是靠更保守的 prior 直接把 compat layer 静音，而不是把 `CX41-B` 的优势真正转化到 `CX34-A` 上。
+
+结论：
+1. `CX46-B` 在 runtime 上优于 `CX44-B`；
+2. 但它不满足“必须保留真实 witness activation”的条件，因此不能视为合格答案。
+
+##### CX46-C：Scenario-Calibrated Macro-Bearing Witness Prior（`rs_cx46/cx46_c_mscwp.py`）
+核心想法：
+1. 在 `CX46-B` 的 scenario prior 基础上进一步对齐 object：
+   - witness 只在 macro-bearing 结点上启用；
+   - macro-free 结点直接回退 parent；
+2. 目标是恢复真实 activation，同时维持 `CX46-B` 的负 runtime。
+
+public 结果（`reports/rs_p0cx46_c_pilot_v1.md`）：
+1. 相对 `CX34-A`：
+   - `success_delta_pp = 0.000`
+   - `exp_delta = 0.000`
+   - `mean_time_overhead_ratio = +0.018614`
+2. 同时诊断显示：
+   - `witness_hits = 0`
+3. 说明这条线一方面把 `runtime` 拉回正值，另一方面依然没恢复真实 activation。
+
+结论：
+1. `CX46-C` 同样失败；
+2. 这进一步说明：当前问题不只是 prior 粒度，而是 witness quality 的表示对象本身还不够好。
+
+阶段结论：
+1. `CX46-B` 首次在不伤 `success/exp` 的前提下把 public runtime 明确拉成负值，但它靠的是把 compat layer 静音，而非真实 activation；
+2. `CX46-C` 试图恢复 activation，但一恢复就又丢掉 runtime；
+3. 因而 `CX46` 当前给出的最可靠结论是：
+   - **family/scenario-specific quality prior 是必要的；**
+   - **但当前的 witness quality 表示还不足以同时满足“真实 activation + 稳定负 runtime”这两个条件。**
+
+
 #### P0-D：把“RS 本体贡献”与“残差/上层网络贡献”彻底拆开
 目标：证明真正的根本创新点是 `RS 代价场`，而不是上层组合偶然奏效。
 必须完成：
