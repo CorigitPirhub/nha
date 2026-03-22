@@ -8066,6 +8066,106 @@ hard order-audit 结果（`reports/rs_p0cx46_j_hard_order_audit_v1.md`）：
    - `hard` 上在 order-audit 条件下也出现稳定负 runtime；
    - 同时必须保留真实 witness activation，不能退化成 `witness_hits = 0` 的空转兼容层。
 
+#### P0-CX47：围绕 hard-stable witness-specific runtime 的下一轮收口（进行中）
+状态：`IN_PROGRESS（2026-03-22：已完成 CX47-A/B/C/D 多轮实现尝试；当前仍未产生一个通过 dev gate 的新分支，accepted 主线继续保持为 CX46-F）`
+是否需要模型/方法修改：`是（当前问题已经从 family/scenario/type 粒度 credit 转向“如何以足够低成本估计 event-level review value”）`
+
+目标：
+1. 不再只证明 witness 机制存在；
+2. 而是把 `CX46-F` 在 hard order-audit 下相对 `No-Witness-Transfer` 的**微弱负 runtime**放大成稳定负值；
+3. 最低目标是：
+   - `success_delta_pp = 0`
+   - `exp_delta = 0`
+   - `mean_time_overhead_ratio < 0`
+   - `win_rate_full` 明显高于 `0.5`
+
+##### CX47-A：Type-Conditional Review Ledger（已失败，不保留）
+核心想法：
+1. 把 `CX46-J/K` 的 credit 从 `global/scenario` 继续细化到 `event type`；
+2. `event type` 定义为：
+   - `scenario`
+   - `class_key`
+   - `must_precede`
+   - `macro-bearing`
+3. 目标是让 budget 直接绑定到“哪类局部结构值得 review”。
+
+结论：
+1. dev 上相对 `No-Witness-Transfer / No-Credit-Gate` 有局部正效应；
+2. 但相对 `CX34-A` 仍显著负向；
+3. 说明仅把 budget 粒度从 scenario 改成 type 仍不足以解决 early full-review 的沉没成本；
+4. 因而该分支不保留。
+
+##### CX47-B：Event-Level Value-of-Review（第一版，已失败，不保留）
+核心想法：
+1. 直接对每次 full review 学一个 `event-level review value`；
+2. 不再用 family/scenario/type budget；
+3. 目标是在 review 前判断“这次 full review 值不值得做”。
+
+结论：
+1. 第一版需要额外高成本 trace 以收集训练标签；
+2. 在当前实现框架下，训练/验证成本过高，未形成可执行的 surviving candidate；
+3. 因而不保留。
+
+##### CX47-C：Cheap Event-Value Proxy（已失败，不保留）
+核心想法：
+1. 不再做高成本 trace 学习；
+2. 直接用在线可得的廉价 proxy 近似 review value。
+
+结论：
+1. 当前 cheap proxy 仍未形成稳定正候选；
+2. dev 阶段没有出现可推进到 public 的 surviving branch；
+3. 因而不保留。
+
+##### CX47-D：Event-Value Proxy Scheduler（已失败，不保留）
+核心想法：
+1. 复用 `CX46-D/F` 已有质量表示；
+2. 结合 miss-streak / support / local quality 构造更便宜的 event-value proxy；
+3. 用它在 online 里稀疏化 full review。
+
+结论：
+1. 当前参数族在 dev 上全部为负；
+2. 说明“廉价 proxy + miss-streak”的实现仍然过早剪掉了有价值 review；
+3. 因而不保留。
+
+当前阶段结论：
+1. `CX46-G/H/I/K` 与 `CX47-A/C/D` 的共同失败说明：
+   - 问题不在于 `family/scenario/type` credit 粒度选错了一档，而在于这些 budget 机制都仍然是**间接对象**；
+2. `CX46-F/J` 的切片分析（`outputs/cx47_event_contract_analysis_v1.txt`）进一步表明：
+   - 真实正收益事件里既有高 `witness_hits` 的 case，也有 `hits = 0` 但 `gain_vs_nowt > 0` 的 case；
+   - 因此单纯围绕 `hits / family yield / scenario yield` 配 budget 会丢掉一类真正重要的正收益事件；
+3. 当前最需要的新对象不是：
+   - `family credit`
+   - `scenario credit`
+   - `type credit`
+   - 或 generic dedup
+   而是：
+   - **review → store 的 event-level value proxy**
+4. 下一轮若继续推进，应优先围绕：
+   - 最小 event feature contract；
+   - 直接预测 “这次 full review 是否可能产出有价值 witness/store”；
+   - 并且该 proxy 必须足够便宜，不能再依赖高成本 trace 学习。
+5. 当前已经形成一版正式分析产物：`reports/rs_p0cx47_event_contract_v1.md`；
+   其核心结论是：
+   - 正收益事件并不只来自高 `witness_hits`；
+   - 因而 `hits / family yield / scenario yield` 都不应再作为主特征；
+   - 下一轮唯一合理的最小输入应收敛到：
+     - `scenario`（仅作弱 prior）
+     - `class_key`
+     - `must_precede`
+     - `macro-bearing`
+     - `local quality store_strength`
+     - `event miss streak`
+     - `coarse support count`（仅作弱 bonus）
+   - 这份 contract 之后应被视为 `CX47-E` 的唯一允许输入边界。
+6. 作为后续 `CX47-E` 及其后继分支的基础设施，本轮已新增并 smoke 验证：
+   - `rs_cx47/event_substrate.py`
+   - `scripts/extract_cx47_event_logs_v1.py`
+   - `reports/rs_p0cx47_event_substrate_smoke_v1.md`
+   该 substrate 的作用不是直接给出新算法分支，而是：
+   - 在不改 planner 语义的前提下，记录 `extra_successors / rank_successors` 层面的 event rows；
+   - 输出 `scenario / class_key / must_precede / macro_count / support_count / store_strength_proxy / event_seen` 等最小事件信号；
+   - 为后续真正的 `event→store` 代理提供低成本、可复用的数据入口。
+
 ##### CX46-A：Family-Calibrated Witness Prior（`rs_cx46/cx46_a_fcwp.py`）
 核心想法：
 1. 不再用统一 witness quality 门槛；
