@@ -1,7 +1,0 @@
-sample_name,path,scenario,difficulty,source,map_id,success,expansions,runtime_ms,path_length,split
-sample_000012.npz,data/benchmark/rs_root_hard_v2/dev/sample_000012.npz,alpha_puzzle,hard,rs_root_hard_v2_synth,alpha_puzzle_dev_s7_q001_t0002,1,19328.0,4940.309260971844,48.1295683671438,calib_val
-sample_000036.npz,data/benchmark/rs_root_hard_v2/dev/sample_000036.npz,deadend_labyrinth,very_hard,rs_root_hard_v2_synth,deadend_labyrinth_dev_s7_q001_t0002,1,6466.0,1467.9659879766405,29.388494417671424,calib_val
-sample_000040.npz,data/benchmark/rs_root_hard_v2/dev/sample_000040.npz,deadend_labyrinth,very_hard,rs_root_hard_v2_synth,deadend_labyrinth_dev_s7_q005_t0006,1,5306.0,1340.1788750197738,34.19744242782959,calib_val
-sample_000039.npz,data/benchmark/rs_root_hard_v2/dev/sample_000039.npz,deadend_labyrinth,very_hard,rs_root_hard_v2_synth,deadend_labyrinth_dev_s7_q004_t0005,1,3935.0,931.3308228738606,31.79115724150787,calib_val
-sample_000038.npz,data/benchmark/rs_root_hard_v2/dev/sample_000038.npz,deadend_labyrinth,very_hard,rs_root_hard_v2_synth,deadend_labyrinth_dev_s7_q003_t0004,1,3429.0,876.6683738213032,31.800635743119475,calib_val
-sample_000035.npz,data/benchmark/rs_root_hard_v2/dev/sample_000035.npz,deadend_labyrinth,very_hard,rs_root_hard_v2_synth,deadend_labyrinth_dev_s7_q000_t0001,1,800.0,204.25404398702085,19.912429465936103,calib_val

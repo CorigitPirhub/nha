@@ -1,8 +1,0 @@
-sample_name,path,scenario,difficulty,source,map_id,success,expansions,runtime_ms,path_length,split
-sample_000026.npz,data/benchmark/rs_root_hard_v2/dev/sample_000026.npz,narrow_passage,hard,rs_root_hard_v2_synth,narrow_passage_dev_s7_q003_t0004,1,3421.0,829.6405870933086,28.78976391217766,calib_val
-sample_000033.npz,data/benchmark/rs_root_hard_v2/dev/sample_000033.npz,maze,hard,rs_root_hard_v2_synth,maze_dev_s7_q004_t0005,1,17061.0,4430.129708023742,54.219108632978546,calib_val
-sample_000003.npz,data/benchmark/rs_root_hard_v2/dev/sample_000003.npz,parasol_misc,hard,parasol_public_anchor,SimpleObstacle_Obstacle2_q000,1,1006.0,237.4979890882969,28.78875961092524,calib_val
-sample_000030.npz,data/benchmark/rs_root_hard_v2/dev/sample_000030.npz,maze,hard,rs_root_hard_v2_synth,maze_dev_s7_q001_t0002,1,14178.0,3695.575554156676,54.14816906117416,calib_val
-sample_000032.npz,data/benchmark/rs_root_hard_v2/dev/sample_000032.npz,maze,hard,rs_root_hard_v2_synth,maze_dev_s7_q003_t0004,1,12261.0,3181.153540033847,58.418655117407184,calib_val
-sample_000027.npz,data/benchmark/rs_root_hard_v2/dev/sample_000027.npz,narrow_passage,very_hard,rs_root_hard_v2_synth,narrow_passage_dev_s7_q004_t0005,1,2118.0,546.9915319699794,20.04392057985025,calib_val
-sample_000000.npz,data/benchmark/rs_root_hard_v2/dev/sample_000000.npz,flange,very_hard,parasol_public_anchor,flange_0.95_q000,1,10673.0,2528.407394886017,33.439988266462194,calib_val

@@ -1,8 +1,0 @@
-method,num_rows,mean_success,mean_time_ms,mean_expansions,evaluation_window,proxy_note
-A*,3,1.0,0.5390614666666667,228.7325,2024-2026,reproduced under unified in-repo protocol
-Theta*,3,1.0,1.3819182,146.21041666666667,2024-2026,reproduced under unified in-repo protocol
-Neural A*,3,1.0,2.4777216,537.4508333333333,2024-2026,reproduced under unified in-repo protocol
-Hybrid A* (RS),1,1.0,2686.2636414,12370.0,2024-2026,reproduced under unified in-repo protocol
-Kinodynamic BIT*,1,1.0,2837.946275,300.0,2024-2026,reproduced under unified in-repo protocol
-Kinodynamic RRT*,1,1.0,3456.0298834,300.0,2024-2026,reproduced under unified in-repo protocol
-VIN,3,0.9977776666666666,10.3047068,3106.9162443333335,2024-2026,reproduced under unified in-repo protocol

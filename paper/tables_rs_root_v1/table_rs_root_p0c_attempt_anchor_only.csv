@@ -1,3 +1,0 @@
-stage,dataset,comparison,cap,num_cases,success_delta_pp,exp_delta_pct,time_delta_pct,path_delta_pct,comment
-dev_selection,rs_root_hard_v2:dev(stratified subset),Ours vs Hybrid A* (RS),3500,14,0.0,-5.541623751735268,-4.828342589005701,-0.4457117806600859,selection stage only; not final claim
-test_once,rs_root_hard_v2:test(anchor-only subset),Ours vs Hybrid A* (RS),3500,13,0.0,2.9602165725047027,1.7559544054133538,0.0,final one-shot anchor-only validation for this attempt

@@ -1,9 +1,0 @@
-block,dataset,comparison,metric,ours,baseline,delta,comment
-hard_bundle_overall,parasol (public anchor),Full vs No-RS,success_rate,0.777778,0.166667,61.111 pp,necessity / solvability collapse
-hard_bundle_overall,parasol (public anchor),Full vs No-Residual,avg_expansions,1430.571429,1579.642857,-9.437%,residual gain on public anchor bundle
-hard_bundle_overall,parasol (public anchor),Full vs No-Residual,avg_time_ms,538.995621,595.560217,-9.498%,residual gain on public anchor bundle
-narrow_subset,parasol:narrow_passage (public anchor subset),Full vs No-RS,success_rate,0.750000,0.000000,75.000 pp,"tiny subset; keep as anchor-only diagnostic, not standalone SOTA claim"
-fair_nearest_baseline,parasol (public anchor),Ours vs Hybrid A* (RS),avg_expansions,12177.277778,12368.111111,-1.543%,primary nearest-baseline axis
-fair_nearest_baseline,parasol (public anchor),Ours vs Hybrid A* (RS),avg_time_ms,4537.728912,4611.133158,-1.592%,primary nearest-baseline axis
-fair_auxiliary_only,parasol (public anchor),Ours vs Kinodynamic BIT*,avg_time_ms,4537.728912,2947.205766,53.967%,auxiliary only; not allowed as the primary root claim target
-fair_auxiliary_only,parasol (public anchor),Ours vs Kinodynamic RRT*,avg_time_ms,4537.728912,3247.561053,39.727%,auxiliary only; not allowed as the primary root claim target

@@ -1,9 +1,0 @@
-{
-  "teacher_mode": "hybrid_rs_consistent_esdf",
-  "teacher_rs_backend": "auto",
-  "teacher_rs_step_size": 1.0,
-  "hybrid_obstacle_alpha": 0.2,
-  "hybrid_obstacle_threshold_m": 1.6,
-  "include_rs_base": true,
-  "teacher_yaw_bins": 8
-}
